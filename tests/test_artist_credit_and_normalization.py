@@ -18,8 +18,8 @@ class TextNormalizationTests(unittest.TestCase):
     def test_accents_are_not_removed(self):
         self.assertNotEqual(BOT.norm_text("Les Négresses Vertes"), BOT.norm_text("Les Negresses Vertes"))
 
-    def test_en_dash_is_not_collapsed(self):
-        self.assertNotEqual(BOT.norm_text("A–B"), BOT.norm_text("A-B"))
+    def test_en_dash_typography_is_normalized(self):
+        self.assertEqual(BOT.norm_text("A–B"), BOT.norm_text("A-B"))
 
 
 class DiscogsArtistCreditTests(unittest.TestCase):
