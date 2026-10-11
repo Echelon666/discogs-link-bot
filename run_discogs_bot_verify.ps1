@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Limit = 20
 )
 
@@ -11,6 +11,8 @@ try {
     $env:DISCOGS_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
     $candidateFile = Join-Path $PSScriptRoot 'discogs_bot_preflight_output\stage1_unique_release_candidates.tsv'
     $verifyScript = Join-Path $PSScriptRoot 'discogs_bot_verify.py'
+    $outputDir = Join-Path $PSScriptRoot 'discogs_bot_verify_output'
+    $cacheDir = Join-Path $outputDir 'cache'
 
     if (-not (Test-Path -LiteralPath $candidateFile)) {
         throw "Candidate file not found: $candidateFile"
@@ -20,12 +22,15 @@ try {
     }
 
     if ($Limit -gt 0) {
-        Write-Host "Pilot verification: first $Limit records. No MusicBrainz edits will be submitted."
+        Write-Host "V5 pilot verification: first $Limit records. Read-only; no MusicBrainz edits will be submitted."
     } else {
-        Write-Host 'Full candidate verification. No MusicBrainz edits will be submitted.'
+        Write-Host 'V5 full verification. Read-only; no MusicBrainz edits will be submitted.'
     }
+    Write-Host 'V5 evaluates all available fields using conservative normalization.'
+    Write-Host "Report folder: $outputDir"
+    Write-Host "Cache folder: $cacheDir"
 
-    & py $verifyScript $candidateFile --limit $Limit
+    & py $verifyScript $candidateFile --limit $Limit --out-dir $outputDir --cache-dir $cacheDir
     $exitCode = $LASTEXITCODE
 }
 finally {
