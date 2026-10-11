@@ -1,0 +1,19 @@
+# Python bytecode and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local input data and generated reports
+/input.tsv
+/discogs_bot_preflight_output/
+/discogs_bot_verify_output/
+/stage1_unique_release_candidates.tsv
+/stage2_verification_report*.tsv
+/stage2_summary*.txt
+*.log
+
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
