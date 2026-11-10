@@ -14,14 +14,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 MBID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-DISCogs = re.compile(r"^/release/(\d+)(?:-|/|$)", re.I)
+DISCOGS = re.compile(r"^/release/(\d+)(?:-|/|$)", re.I)
 MAX_BATCH = 150
 
 def validate(row: dict[str, str], line: int) -> dict[str, str]:
     mbid = (row.get("mbid") or "").strip()
     url = (row.get("discogs_url") or "").strip()
     parsed = urlparse(url)
-    match = DISCogs.match(parsed.path)
+    match = DISCOGS.match(parsed.path)
     if not MBID.fullmatch(mbid):
         raise ValueError(f"Line {line}: invalid MBID")
     if parsed.scheme != "https" or (parsed.hostname or "").lower() not in {"discogs.com", "www.discogs.com"} or not match:
@@ -38,6 +38,12 @@ def validate(row: dict[str, str], line: int) -> dict[str, str]:
         "mb_title": (row.get("mb_title") or "").strip(),
         "mb_artist": (row.get("mb_artist") or "").strip(),
         "mb_barcode": (row.get("mb_barcode") or row.get("barcode") or "").strip(),
+        "mb_labels": (row.get("mb_labels") or "").strip(),
+        "mb_catalog_numbers": (row.get("mb_catalog_numbers") or "").strip(),
+        "discogs_labels": (row.get("discogs_api_labels") or "").strip(),
+        "discogs_catalog_numbers": (row.get("discogs_api_catalog_numbers") or "").strip(),
+        "title_match_type": (row.get("title_match_type") or "").strip(),
+        "artist_match_type": (row.get("artist_match_type") or "").strip(),
         "discogs_title": (row.get("discogs_api_title") or "").strip(),
         "discogs_artist": (row.get("discogs_api_artist") or "").strip(),
         "reason": (row.get("reason") or "").strip(),
@@ -57,6 +63,7 @@ def main() -> int:
     p.add_argument("--input", required=True, type=Path, help="Stage 2 v5 stage2_verification_report.tsv")
     p.add_argument("--limit", type=int, default=100, help="Batch size, 1..150 (default 100)")
     p.add_argument("--out-dir", type=Path, default=Path("stage3_output"))
+    p.add_argument("--target-server", choices=("musicbrainz.org", "test.musicbrainz.org"), default="musicbrainz.org", help="MusicBrainz server that the queue is allowed to run on")
     a = p.parse_args()
     if not 1 <= a.limit <= MAX_BATCH:
         p.error(f"--limit must be 1..{MAX_BATCH}")
@@ -86,6 +93,7 @@ def main() -> int:
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_report": a.input.name,
         "source_engine": "DiscogsBot Stage 2 v5",
+        "target_server": a.target_server,
         "selection_method": "Evenly spaced through AUTO_CANDIDATE rows in report order",
         "eligible_auto_candidates": len(eligible),
         "selected_count": len(selected),
@@ -94,7 +102,7 @@ def main() -> int:
     }
     a.out_dir.mkdir(parents=True, exist_ok=True)
     (a.out_dir / "submission_batch.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    fields = ["batch_index","source_line_no","mbid","mb_artist","mb_title","discogs_release_id","discogs_artist","discogs_title","mb_barcode","discogs_url","reason","normalization_actions","status"]
+    fields = ["batch_index","source_line_no","mbid","mb_artist","mb_title","discogs_release_id","discogs_artist","discogs_title","mb_barcode","mb_labels","mb_catalog_numbers","discogs_labels","discogs_catalog_numbers","title_match_type","artist_match_type","discogs_url","reason","normalization_actions","status"]
     with (a.out_dir / "submission_batch_preview.tsv").open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields, delimiter="\t", extrasaction="ignore")
         w.writeheader()
