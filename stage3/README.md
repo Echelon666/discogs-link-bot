@@ -32,7 +32,7 @@ Inspect \`submission_batch_preview.tsv\` before loading \`submission_batch.json\
 
 Production submissions require two explicit confirmations. The script submits one relationship per POST and spaces MusicBrainz requests by at least 1.1 seconds.
 
-The submitter verifies the signed-in username against the configured exact bot username `WindowsLover_DiscogsBot`. A personal account such as `WindowsLover` is blocked in the UI and again inside the submission function; the checkbox cannot override this check.
+The submitter verifies the signed-in username against the server-specific identity: `TestBot` on `test.musicbrainz.org` and `WindowsLover_DiscogsBot` on production `musicbrainz.org`. A personal account such as `WindowsLover` is blocked in the UI and again inside the submission function; the checkbox cannot override this check.
 
 ## Safety behavior
 
