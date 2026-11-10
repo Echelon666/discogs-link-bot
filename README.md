@@ -2,7 +2,7 @@
 
 A conservative, auditable toolset for checking whether a proposed Discogs release URL matches a specific MusicBrainz release.
 
-**Current status:** Stage 1 and Stage 2 v5 are read-only. An optional, separate Stage 3 userscript is provided for controlled submission of reviewed `AUTO_CANDIDATE` rows as **votable** MusicBrainz edits. Stage 3 has not yet completed its mandatory live smoke test on the MusicBrainz test server. Do not use it for production submissions until that test succeeds. `AUTO_CANDIDATE` means a record passed the implemented metadata checks; it is not, by itself, permission to create a public edit.
+**Current status:** Stage 1 and Stage 2 v5 are read-only. A separate Stage 3 userscript is available for controlled submission of reviewed `AUTO_CANDIDATE` rows as **votable** MusicBrainz edits. Stage 3 v0.1.2 passed a one-record live smoke test on `test.musicbrainz.org` on 2026-11-10 (edit #100327478 was confirmed open for voting). Stage 3 v0.1.3 adds fresh blacklist, authenticated-session and open-edit-count checks plus server-bound queues and submission limits; its read-only preflight must succeed on both test and production before any production batch is submitted. `AUTO_CANDIDATE` means a record passed the implemented metadata checks; it is not, by itself, permission to create a public edit.
 
 ## What it does
 
