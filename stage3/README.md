@@ -2,7 +2,7 @@
 
 Stage 3 is a separate, optional write module for the read-only Stage 1/Stage 2 v5 verifier. It creates **Release → URL → Discogs** relationships as **votable edits**. It never votes, auto-approves, or cancels edits.
 
-> **Status: implemented, not yet live-tested.** The script has not yet completed a signed-in smoke test on the MusicBrainz test server. Do not use the production queue until that test succeeds and its resulting open edit is confirmed as votable.
+> **Status: test-server smoke test passed; production pilot still gated.** On 2026-11-10, TestBot submitted one test edit (#100327478, Mike Oldfield — Exposed). The edit page displayed `Status: Open` and explicitly stated that the edit was open for voting. This verifies the end-to-end submission path on the test server. Production submissions remain gated on the remaining bot-profile, login-policy and policy-coverage checklist items.
 
 ## Files
 
@@ -27,7 +27,7 @@ Inspect \`submission_batch_preview.tsv\` before loading \`submission_batch.json\
 2. Sign in to MusicBrainz using the dedicated bot account. Confirm the displayed account name before proceeding.
 3. On the **test server**, prepare a separate one-item queue using a release MBID that actually exists on that server. Do not assume production MBIDs also exist there.
 4. Load the test queue in the Stage 3 panel and run **Check existing links**. This is read-only.
-5. Confirm the bot account checkbox and submit the single test item. Confirm the edit appears in the bot's open edits and is votable.
+5. Confirm the bot account checkbox and submit the single test item. Confirm the edit appears in the bot's open edits and the edit page explicitly says it is open for voting. **Completed on 2026-11-10: test edit #100327478.**
 6. Only after the test succeeds, load the reviewed 100-item production queue on \`musicbrainz.org\`, run preflight, review the READY count, confirm the bot account, and type the exact production confirmation phrase.
 
 Production submissions require two explicit confirmations. The script submits one relationship per POST and spaces MusicBrainz requests by at least 1.1 seconds.
