@@ -11,7 +11,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.1.0', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
+  const VERSION = '0.1.1', EXPECTED_BOT_USER = 'WindowsLover_DiscogsBot', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
   const KEY = 'discogsbot-stage3:' + location.host + ':state-v1';
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -54,6 +54,13 @@
     return match ? decodeURIComponent(match[1]) : link.textContent.trim();
   }
   function normURL(s) { try { const u=new URL(s); return u.hostname.toLowerCase().replace(/^www\./,'')+u.pathname.replace(/\/+$/,''); } catch (_) { return String(s||'').toLowerCase(); } }
+  function detectedUsername() {
+    const link = Array.from(document.querySelectorAll('a[href]')).find(a => /^\/user\/[^/]+\/?$/i.test(a.getAttribute('href') || ''));
+    if (!link) return '';
+    const match = (link.getAttribute('href') || '').match(/^\/user\/([^/]+)\/?$/i);
+    try { return match ? decodeURIComponent(match[1]) : ''; } catch (_) { return match ? match[1] : ''; }
+  }
+  function isBotAccount() { return detectedUsername() === EXPECTED_BOT_USER; }
   async function checkOne(item) {
     if (state.submitted[item.mbid]) return {item,status:'PREVIOUSLY_SUBMITTED',detail:'Recorded in local ledger.'};
     if (state.uncertain[item.mbid]) return {item,status:'UNCERTAIN_DO_NOT_RETRY',detail:'Previous POST may have succeeded. Inspect bot open edits.'};
@@ -82,7 +89,10 @@
     const ready=checked.filter(x=>x.status==='READY'&&!results.some(y=>y.item.mbid===x.item.mbid)).length;
     panel.querySelector('#db-count').textContent=queue?queue.items.length+' records loaded':'No queue loaded';
     panel.querySelector('#db-check').disabled=!queue||busy;
-    panel.querySelector('#db-submit').disabled=!complete||!panel.querySelector('#db-account').checked||busy||!ready;
+    panel.querySelector('#db-account').disabled=!isBotAccount();
+    if (!isBotAccount()) panel.querySelector('#db-account').checked=false;
+    panel.querySelector('#db-account-label').textContent=isBotAccount()?'Verified bot account: '+EXPECTED_BOT_USER:'BLOCKED — signed in as '+(detectedUsername()||'unknown')+'. Required: '+EXPECTED_BOT_USER;
+    panel.querySelector('#db-submit').disabled=!complete||!isBotAccount()||!panel.querySelector('#db-account').checked||busy||!ready;
     panel.querySelector('#db-submit').textContent='Submit '+ready+' READY as votable';
     panel.querySelector('#db-download').disabled=!checked.length&&!results.length;
   }
@@ -127,6 +137,7 @@
     return {item,status:'SUBMITTED_VOTABLE',detail:'MusicBrainz accepted the edit request.'};
   }
   async function submit() {
+    if (!isBotAccount()) { status('BLOCKED: signed in as '+(detectedUsername()||'unknown')+'. Only '+EXPECTED_BOT_USER+' may submit bot edits.','error'); return; }
     if(!queue||busy||!complete)return;
     if(queue.items.some(x=>state.uncertain[x.mbid])){status('Uncertain previous POST blocks this queue. Inspect bot open edits.','error');return;}
     const ready=checked.filter(x=>x.status==='READY'&&!results.some(y=>y.item.mbid===x.item.mbid));
@@ -163,7 +174,7 @@
     panel=document.createElement('section');panel.id='discogsbot-stage3';
     panel.innerHTML='<div class="head"><b>DiscogsBot Stage 3 v'+VERSION+'</b><button id="db-close">×</button></div>'+
       '<div class="small">'+esc(location.host)+' · '+(location.hostname==='musicbrainz.org'?'PRODUCTION':'TEST')+' · Session: '+esc(userHint())+'</div>'+
-      '<label class="confirm"><input type="checkbox" id="db-account"> I confirm this session is logged in as the DiscogsBot account.</label>'+
+      '<label class="confirm"><input type="checkbox" id="db-account"> <span id="db-account-label"></span></label>'+
       '<label class="file">Load submission_batch.json <input type="file" id="db-file" accept=".json,application/json"></label>'+
       '<div id="db-count">No queue loaded</div><div id="db-summary">Only AUTO_CANDIDATE rows are accepted; maximum 150.</div>'+
       '<div class="actions"><button id="db-check" disabled>1. Check existing links</button><button id="db-submit" disabled>Submit 0 READY as votable</button></div>'+
@@ -177,7 +188,7 @@
     panel.querySelector('#db-close').onclick=()=>{panel.remove();style.remove();panel=null;};
     panel.querySelector('#db-account').onchange=render;panel.querySelector('#db-check').onclick=preflight;panel.querySelector('#db-submit').onclick=submit;panel.querySelector('#db-download').onclick=download;
     panel.querySelector('#db-file').onchange=async e=>{
-      try{queue=validate(JSON.parse(await e.target.files[0].text()));checked=[];results=[];complete=false;panel.querySelector('#db-account').checked=false;panel.querySelector('#db-summary').textContent=(queue.batch_id||'batch')+' · '+queue.items.length+' items · '+(queue.source_engine||'v5')+' · AUTO_CANDIDATE only';status('Queue loaded. Confirm bot account and run the read-only check.','success');}
+      try{queue=validate(JSON.parse(await e.target.files[0].text()));checked=[];results=[];complete=false;panel.querySelector('#db-account').checked=false;panel.querySelector('#db-summary').textContent=(queue.batch_id||'batch')+' · '+queue.items.length+' items · '+(queue.source_engine||'v5')+' · AUTO_CANDIDATE only';status('Queue loaded. Run read-only preflight. Submission requires the exact account '+EXPECTED_BOT_USER+'.','success');}
       catch(err){queue=null;checked=[];results=[];complete=false;status('Queue rejected: '+err.message,'error');}render();
     };
     render();
