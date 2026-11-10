@@ -46,7 +46,7 @@ The tests cover AUTO_CANDIDATE-only selection, server-target metadata, duplicate
 
 ## Safety behavior
 
-- Only `AUTO_CANDIDATE` rows from the named Stage 2 v5 report are accepted; a queue is limited to 150 items and must target the exact host on which it is loaded.
+- Only AUTO_CANDIDATE rows from the named Stage 2 v5 report are accepted; a queue is limited to 150 items and must target the exact host on which it is loaded.
 - The queue loader validates MBIDs, Discogs release URLs and duplicate identifiers.
 - Every preflight downloads the current official Discogs Links blacklist and excludes matching Release MBIDs. A failed or empty blacklist parse fails closed.
 - Each run verifies the logged-in username and requests the bot's authenticated open-edits page; an exact open-edit count is required. Approximate counts fail closed.
