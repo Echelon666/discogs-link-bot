@@ -1,6 +1,6 @@
 # MusicBrainz Bot Readiness Checklist
 
-This checklist is a project safety plan, not a statement that the current read-only scripts are already approved for public editing.
+This checklist is a project safety plan. Stage 3 is implemented separately, but is not approved for production use until the remaining test-server and bot-profile requirements below are complete.
 
 Official references:
 
