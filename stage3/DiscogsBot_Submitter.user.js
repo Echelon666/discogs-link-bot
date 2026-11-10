@@ -64,8 +64,9 @@
     const response = await mbFetch(path, {headers:{Accept:'text/html'}});
     const html = await response.text();
     if (!response.ok || (response.redirected && /\/login(?:[?#]|$)/i.test(response.url))) throw new Error('MusicBrainz login/session check failed. Sign in as ' + EXPECTED_BOT_USER + ' and start this run again.');
-    const found = html.match(/Found\s+([0-9,]+)\s+edits?/i);
-    if (found) return Number(found[1].replace(/,/g, ''));
+    const found = html.match(/Found\s+(at least\s+)?([0-9,]+)\s+edits?/i);
+    if (found && found[1]) throw new Error('MusicBrainz reports only an approximate open-edit count ('+found[2]+'). No submission is allowed until an exact count is available.');
+    if (found) return Number(found[2].replace(/,/g, ''));
     if (/No edits found|There are no open edits/i.test(html)) return 0;
     throw new Error('Could not read the total open-edit count from the bot profile. No submission is allowed until the count can be verified.');
   }
@@ -193,10 +194,10 @@
     return {item,status:'SUBMITTED_VOTABLE',detail:'MusicBrainz accepted the edit request.'};
   }
   function countSubmittedToday() {
-    const today = new Date().toLocaleDateString('en-CA');
+    const today = new Date().toISOString().slice(0, 10);
     return Object.values(state.submitted).filter(entry => {
       const stamp = entry && (entry.at || entry.submitted_at);
-      return stamp && new Date(stamp).toLocaleDateString('en-CA') === today;
+      return stamp && new Date(stamp).toISOString().slice(0, 10) === today;
     }).length;
   }
   async function submit() {
