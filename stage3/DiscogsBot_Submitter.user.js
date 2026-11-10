@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DiscogsBot Stage 3 — Votable Release Link Submitter
 // @namespace    https://musicbrainz.org/
-// @version      0.1.1
+// @version      0.1.2
 // @description  Submit reviewed DiscogsBot v5 candidates as votable MusicBrainz release URL edits.
 // @match        https://musicbrainz.org/*
 // @match        https://test.musicbrainz.org/*
@@ -11,7 +11,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '0.1.1', EXPECTED_BOT_USER = 'WindowsLover_DiscogsBot', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
+  const VERSION = '0.1.2', EXPECTED_BOT_USER = location.hostname === 'test.musicbrainz.org' ? 'TestBot' : 'WindowsLover_DiscogsBot', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
   const KEY = 'discogsbot-stage3:' + location.host + ':state-v1';
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
