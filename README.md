@@ -24,7 +24,7 @@ Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained me
 - Windows PowerShell for the included `.ps1` wrapper (the Python scripts themselves use the standard library only).
 - A local MusicBrainz mirror exposing the `/ws/2` API, defaulting to `http://localhost:5000`.
 - A Discogs personal API token for Stage 2.
-- For optional Stage 3: a current browser session signed in as the dedicated MusicBrainz bot account and Tampermonkey.
+- For optional Stage 3: Tampermonkey, a current browser session signed in as the dedicated MusicBrainz bot account, and permission for the userscript to fetch the official MusicBrainz Discogs blacklist (Tampermonkey @connect musicbrainz.org).
 - Internet access to read Discogs release data and the official MusicBrainz Discogs release blacklist.
 
 Stages 1 and 2 make no MusicBrainz database writes. Stage 3 is the separate optional write path described above. Discogs requests in Stage 2 are throttled (default minimum interval 1.1 seconds between uncached requests) and transient HTTP failures are retried with backoff.
