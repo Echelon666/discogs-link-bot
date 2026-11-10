@@ -47,6 +47,12 @@
     });
     return data;
   }
+  function userHint() {
+    const link = Array.from(document.querySelectorAll('a[href]')).find(a => /^\/user\/[^/]+\/?$/i.test(a.getAttribute('href') || ''));
+    if (!link) return 'not detected — sign in as the bot account';
+    const match = (link.getAttribute('href') || '').match(/^\/user\/([^/]+)\/?$/i);
+    return match ? decodeURIComponent(match[1]) : link.textContent.trim();
+  }
   function normURL(s) { try { const u=new URL(s); return u.hostname.toLowerCase().replace(/^www\./,'')+u.pathname.replace(/\/+$/,''); } catch (_) { return String(s||'').toLowerCase(); } }
   async function checkOne(item) {
     if (state.submitted[item.mbid]) return {item,status:'PREVIOUSLY_SUBMITTED',detail:'Recorded in local ledger.'};
@@ -156,7 +162,7 @@
   function build() {
     panel=document.createElement('section');panel.id='discogsbot-stage3';
     panel.innerHTML='<div class="head"><b>DiscogsBot Stage 3 v'+VERSION+'</b><button id="db-close">×</button></div>'+
-      '<div class="small">'+esc(location.host)+' · '+(location.hostname==='musicbrainz.org'?'PRODUCTION':'TEST')+'</div>'+
+      '<div class="small">'+esc(location.host)+' · '+(location.hostname==='musicbrainz.org'?'PRODUCTION':'TEST')+' · Session: '+esc(userHint())+'</div>'+
       '<label class="confirm"><input type="checkbox" id="db-account"> I confirm this session is logged in as the DiscogsBot account.</label>'+
       '<label class="file">Load submission_batch.json <input type="file" id="db-file" accept=".json,application/json"></label>'+
       '<div id="db-count">No queue loaded</div><div id="db-summary">Only AUTO_CANDIDATE rows are accepted; maximum 150.</div>'+
