@@ -18,7 +18,7 @@ Official references:
 - [ ] State on the bot's user page who maintains the bot.
 - [x] Implement a separate Stage 3 submitter without changing the Stage 1/Stage 2 verifier.
 - [ ] Confirm the bot login/session behavior and required login policy for each run, including runs where no edits are ultimately made.
-- [ ] Complete a one-record votable submission smoke test on the MusicBrainz test server and verify the resulting open edit.
+- [x] Complete a one-record votable submission smoke test on the MusicBrainz test server and verify the resulting open edit. Verified 2026-11-10: test edit #100327478 (Mike Oldfield — Exposed) is Open and the server explicitly states that it is open for voting.
 - [ ] Confirm the current blacklist and other policy requirements are implemented for each relevant entity type before edits.
 - [x] Include clear edit notes with the Discogs release source, v5 verification reasons, and any normalizations.
 - [x] Record accepted submissions locally and stop on ambiguous POST outcomes; never retry an uncertain submission automatically.
@@ -35,4 +35,4 @@ Official references:
 
 ## Current limitation
 
-Stage 1 and Stage 2 remain read-only. A separate Stage 3 userscript has been added, but it is **not yet live-tested**. Do not submit production edits until the test-server smoke test above is completed, the bot profile links to this repository and maintainer, and the bot's session/login policy is confirmed. The Stage 3 website endpoint is internal and may change.
+Stage 1 and Stage 2 remain read-only. Stage 3 passed a one-record live smoke test on the MusicBrainz test server on 2026-11-10: edit #100327478 was created by TestBot and the edit page explicitly confirmed that it was open for voting. Production submission is still gated on linking this repository and its maintainer from the bot profile, confirming the bot's session/login policy, and reviewing the relevant blacklist/policy coverage. The Stage 3 website endpoint is internal and may change.
