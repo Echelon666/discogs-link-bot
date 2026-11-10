@@ -17,9 +17,9 @@ Official references:
 - [ ] Link the source repository from the bot's user page.
 - [ ] State on the bot's user page who maintains the bot.
 - [x] Implement a separate Stage 3 submitter without changing the Stage 1/Stage 2 verifier.
-- [ ] Confirm the bot login/session behavior and required login policy for each run, including runs where no edits are ultimately made.
+- [x] Require an authenticated bot session on every Stage 3 preflight, including runs where no edits are ultimately made; verify it by loading the bot's open-edits page.
 - [x] Complete a one-record votable submission smoke test on the MusicBrainz test server and verify the resulting open edit. Verified 2026-11-10: test edit #100327478 (Mike Oldfield — Exposed) is Open and the server explicitly states that it is open for voting.
-- [ ] Confirm the current blacklist and other policy requirements are implemented for each relevant entity type before edits.
+- [x] Download the current Discogs Release blacklist on every preflight and fail closed if it cannot be parsed; only Release MBIDs are submitted by this bot.
 - [x] Include clear edit notes with the Discogs release source, v5 verification reasons, and any normalizations.
 - [x] Record accepted submissions locally and stop on ambiguous POST outcomes; never retry an uncertain submission automatically.
 - [ ] Review comments and edit notes from the MusicBrainz community and respond in a reasonable time.
@@ -27,7 +27,9 @@ Official references:
 ## Conservative operating policy for this project
 
 - Maximum batch size during the pilot phase: 150 edits; the first production pilot is capped at 100. These are project limits, not official MusicBrainz limits.
-- Maximum planned daily submissions during the pilot phase: 150 edits. Re-evaluate only after community review and a review of the bot's open-edit count.
+- Official MusicBrainz bot daily ceiling: 1,000 edits. Stage 3 enforces this count using its local daily ledger plus a required operator-entered count for same-day submissions outside this browser.
+- Project open-edit ceiling: 2,000 (stricter than the official hard limit of 2,500). Stage 3 reads the current open-edit total before each batch and blocks a batch that would exceed 2,000.
+- First production pilot: 100 edits; subsequent pilot batches: at most 150 until the community has reviewed the first batch.
 - Check the bot's current open-edit count before every batch. Do not approach the recommended 2,000 open edits; the documented hard limit is 2,500.
 - Stop immediately if a match is questioned, an unexpected edit result occurs, the open-edit count is uncertain, or the API reports repeated errors.
 - Do not automatically resubmit edits that failed or were rejected.
@@ -35,4 +37,4 @@ Official references:
 
 ## Current limitation
 
-Stage 1 and Stage 2 remain read-only. Stage 3 passed a one-record live smoke test on the MusicBrainz test server on 2026-11-10: edit #100327478 was created by TestBot and the edit page explicitly confirmed that it was open for voting. Production submission is still gated on linking this repository and its maintainer from the bot profile, confirming the bot's session/login policy, and reviewing the relevant blacklist/policy coverage. The Stage 3 website endpoint is internal and may change.
+Stage 1 and Stage 2 remain read-only. Stage 3 passed a one-record live smoke test on the MusicBrainz test server on 2026-11-10: edit #100327478 was created by TestBot and the edit page explicitly confirmed that it was open for voting. Stage 3 v0.1.3 adds a fresh blacklist download, authenticated open-edit count check, exact server-target queue validation, and daily/open-edit limits. Production submission is still gated on linking this repository and its maintainer from the bot profile, and running a read-only v0.1.3 preflight on both server identities. The Stage 3 website endpoint is internal and may change.
