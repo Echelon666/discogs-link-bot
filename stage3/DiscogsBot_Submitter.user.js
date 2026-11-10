@@ -1,21 +1,25 @@
 // ==UserScript==
 // @name         DiscogsBot Stage 3 — Votable Release Link Submitter
 // @namespace    https://musicbrainz.org/
-// @version      0.1.2
+// @version      0.1.3
 // @description  Submit reviewed DiscogsBot v5 candidates as votable MusicBrainz release URL edits.
 // @match        https://musicbrainz.org/*
 // @match        https://test.musicbrainz.org/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      musicbrainz.org
 // ==/UserScript==
 
 (() => {
   'use strict';
-  const VERSION = '0.1.2', EXPECTED_BOT_USER = location.hostname === 'test.musicbrainz.org' ? 'TestBot' : 'WindowsLover_DiscogsBot', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
+  const VERSION = '0.1.3', EXPECTED_BOT_USER = location.hostname === 'test.musicbrainz.org' ? 'TestBot' : 'WindowsLover_DiscogsBot', LINK_TYPE_ID = 76, EDIT_TYPE = 90, MAX_BATCH = 150, GAP = 1100;
+  const BLACKLIST_URL = 'https://musicbrainz.org/doc/Bots/Blacklist/Discogs_Links';
+  const DAILY_LIMIT = 1000, OPEN_EDIT_PROJECT_LIMIT = 2000, OPEN_EDIT_HARD_LIMIT = 2500;
   const KEY = 'discogsbot-stage3:' + location.host + ':state-v1';
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let state = readState(), queue = null, checked = [], results = [], busy = false, complete = false, last = 0, panel;
+  let currentBlacklist = null, openEditCount = null, blacklistCheckedAt = null;
 
   function readState() {
     try { const s = JSON.parse(localStorage.getItem(KEY) || '{}'); return {submitted:s.submitted || {}, uncertain:s.uncertain || {}}; }
@@ -26,6 +30,44 @@
   async function mbFetch(path, init) {
     await pace();
     return fetch(location.origin + path, Object.assign({credentials:'include', headers:{Accept:'application/json'}}, init || {}));
+  }
+  function gmGetText(url) {
+    return new Promise((resolve, reject) => {
+      const request = typeof GM_xmlhttpRequest === 'function'
+        ? GM_xmlhttpRequest
+        : (typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function' ? GM.xmlHttpRequest : null);
+      if (!request) { reject(new Error('Tampermonkey GM_xmlhttpRequest is unavailable.')); return; }
+      request({
+        method: 'GET', url, headers: {Accept:'text/html'}, timeout: 30000,
+        onload: response => response.status === 200 ? resolve(String(response.responseText || '')) : reject(new Error('Blacklist HTTP ' + response.status)),
+        onerror: () => reject(new Error('Network error while downloading the official Discogs blacklist.')),
+        ontimeout: () => reject(new Error('Timed out while downloading the official Discogs blacklist.'))
+      });
+    });
+  }
+  async function fetchDiscogsBlacklist() {
+    const html = await gmGetText(BLACKLIST_URL);
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const ids = new Set();
+    for (const a of doc.querySelectorAll('a[href]')) {
+      let url;
+      try { url = new URL(a.getAttribute('href'), BLACKLIST_URL); } catch (_) { continue; }
+      const match = url.pathname.match(/^\/release\/([0-9a-f-]{36})(?:\/|$)/i);
+      if (match && mbidOK(match[1])) ids.add(match[1].toLowerCase());
+    }
+    if (!ids.size) throw new Error('Could not extract MusicBrainz Release MBIDs from the official Discogs blacklist. Failing closed: no edits can be submitted.');
+    return ids;
+  }
+  async function verifyRunLoginAndOpenEdits() {
+    if (!isBotAccount()) throw new Error('Wrong account. Required: ' + EXPECTED_BOT_USER);
+    const path = '/user/' + encodeURIComponent(EXPECTED_BOT_USER) + '/edits/open';
+    const response = await mbFetch(path, {headers:{Accept:'text/html'}});
+    const html = await response.text();
+    if (!response.ok || (response.redirected && /\/login(?:[?#]|$)/i.test(response.url))) throw new Error('MusicBrainz login/session check failed. Sign in as ' + EXPECTED_BOT_USER + ' and start this run again.');
+    const found = html.match(/Found\s+([0-9,]+)\s+edits?/i);
+    if (found) return Number(found[1].replace(/,/g, ''));
+    if (/No edits found|There are no open edits/i.test(html)) return 0;
+    throw new Error('Could not read the total open-edit count from the bot profile. No submission is allowed until the count can be verified.');
   }
   function mbidOK(s) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || '')); }
   function discogsID(value) {
@@ -38,6 +80,10 @@
   }
   function validate(data) {
     if (!data || data.schema_version !== 1 || !Array.isArray(data.items) || !data.items.length || data.items.length > MAX_BATCH) throw Error('Invalid queue schema or size (maximum 150).');
+    if (data.source_engine !== 'DiscogsBot Stage 2 v5') throw Error('Queue must originate from the official DiscogsBot Stage 2 v5 report.');
+    if (data.target_server !== location.hostname) throw Error('Queue target is ' + (data.target_server || 'unspecified') + ', but this page is ' + location.hostname + '. Refusing cross-server submission.');
+    const policy = data.submission_policy || {};
+    if (Number(policy.link_type_id) !== LINK_TYPE_ID || Number(policy.edit_type) !== EDIT_TYPE || policy.make_votable !== true) throw Error('Queue submission policy does not match the required votable Discogs Release relationship.');
     const mbids = new Set(), ids = new Set();
     data.items.forEach((x,i) => {
       const id = discogsID(x.discogs_url), mbid = String(x.mbid || '').toLowerCase();
@@ -62,6 +108,8 @@
   }
   function isBotAccount() { return detectedUsername() === EXPECTED_BOT_USER; }
   async function checkOne(item) {
+    if (!currentBlacklist) throw new Error('The official Discogs blacklist has not been loaded. Run preflight again.');
+    if (currentBlacklist.has(item.mbid)) return {item,status:'BLOCKED_BLACKLIST',detail:'MusicBrainz Release MBID is on the current official Discogs blacklist.'};
     if (state.submitted[item.mbid]) return {item,status:'PREVIOUSLY_SUBMITTED',detail:'Recorded in local ledger.'};
     if (state.uncertain[item.mbid]) return {item,status:'UNCERTAIN_DO_NOT_RETRY',detail:'Previous POST may have succeeded. Inspect bot open edits.'};
     const r = await mbFetch('/ws/js/entity/' + item.mbid + '?inc=rels');
@@ -88,6 +136,8 @@
     }).join('');
     const ready=checked.filter(x=>x.status==='READY'&&!results.some(y=>y.item.mbid===x.item.mbid)).length;
     panel.querySelector('#db-count').textContent=queue?queue.items.length+' records loaded':'No queue loaded';
+    panel.querySelector('#db-open-count').textContent=openEditCount===null?'Open edits: not checked':('Open edits: '+openEditCount+'; projected after READY items: '+(openEditCount+checked.filter(x=>x.status==='READY').length));
+    panel.querySelector('#db-blacklist-count').textContent=currentBlacklist?('Official Discogs blacklist checked '+new Date(blacklistCheckedAt).toLocaleTimeString()+'; '+currentBlacklist.size+' release IDs loaded'):'Official Discogs blacklist: not checked';
     panel.querySelector('#db-check').disabled=!queue||busy;
     panel.querySelector('#db-account').disabled=!isBotAccount();
     if (!isBotAccount()) panel.querySelector('#db-account').checked=false;
@@ -98,13 +148,19 @@
   }
   async function preflight() {
     if (!queue||busy) return;
-    busy=true; complete=false; checked=[]; results=[]; render();
-    status('Read-only preflight. No edits are being submitted.','info');
+    if (!isBotAccount()) { status('BLOCKED: sign in as '+EXPECTED_BOT_USER+'.','error'); return; }
+    busy=true; complete=false; checked=[]; results=[]; currentBlacklist=null; openEditCount=null; blacklistCheckedAt=null; render();
+    status('Verifying the current bot login and open-edit count…','info');
     try {
+      openEditCount = await verifyRunLoginAndOpenEdits();
+      status('Downloading the current official Discogs blacklist…','info');
+      currentBlacklist = await fetchDiscogsBlacklist();
+      blacklistCheckedAt = new Date().toISOString();
       for(let i=0;i<queue.items.length;i++){progress(i,queue.items.length,'Checking '+(i+1)+'/'+queue.items.length);checked.push(await checkOne(queue.items[i]));render();}
       complete=true; const n=checked.filter(x=>x.status==='READY').length;
+      const blocked=checked.filter(x=>x.status==='BLOCKED_BLACKLIST').length;
       progress(queue.items.length,queue.items.length,'Preflight complete: '+n+' READY; '+(checked.length-n)+' skipped.');
-      status('Preflight complete. Review the results before submission.','success');
+      status('Preflight complete. Login verified as '+EXPECTED_BOT_USER+'; open edits: '+openEditCount+'; fresh blacklist: '+currentBlacklist.size+' release IDs ('+blocked+' blocked). Enter other daily edits before submission.','success');
     } catch(e) { status('Preflight stopped: '+e.message,'error'); }
     finally { busy=false;render(); }
   }
@@ -136,12 +192,28 @@
     delete state.uncertain[item.mbid];saveState();
     return {item,status:'SUBMITTED_VOTABLE',detail:'MusicBrainz accepted the edit request.'};
   }
+  function countSubmittedToday() {
+    const today = new Date().toLocaleDateString('en-CA');
+    return Object.values(state.submitted).filter(entry => {
+      const stamp = entry && (entry.at || entry.submitted_at);
+      return stamp && new Date(stamp).toLocaleDateString('en-CA') === today;
+    }).length;
+  }
   async function submit() {
     if (!isBotAccount()) { status('BLOCKED: signed in as '+(detectedUsername()||'unknown')+'. Only '+EXPECTED_BOT_USER+' may submit bot edits.','error'); return; }
     if(!queue||busy||!complete)return;
     if(queue.items.some(x=>state.uncertain[x.mbid])){status('Uncertain previous POST blocks this queue. Inspect bot open edits.','error');return;}
     const ready=checked.filter(x=>x.status==='READY'&&!results.some(y=>y.item.mbid===x.item.mbid));
     if(!ready.length)return;
+    if (openEditCount === null || !currentBlacklist || !blacklistCheckedAt) { status('BLOCKED: login, open-edit count and fresh blacklist must all be verified in this run.','error'); return; }
+    const otherDailyRaw = panel.querySelector('#db-other-daily').value.trim();
+    if (otherDailyRaw === '' || !/^\d+$/.test(otherDailyRaw)) { status('Enter other bot edits submitted today outside this browser (enter 0 when none).','error'); return; }
+    const otherDaily = Number(otherDailyRaw), localDaily = countSubmittedToday();
+    const projectedOpen = openEditCount + ready.length;
+    const projectedDaily = otherDaily + localDaily + ready.length;
+    if (projectedOpen > OPEN_EDIT_PROJECT_LIMIT) { status('BLOCKED: current open edits ('+openEditCount+') plus this batch ('+ready.length+') would exceed the project ceiling of '+OPEN_EDIT_PROJECT_LIMIT+'. MusicBrainz hard limit is '+OPEN_EDIT_HARD_LIMIT+'.','error'); return; }
+    if (projectedOpen > OPEN_EDIT_HARD_LIMIT) { status('BLOCKED: this batch would exceed the MusicBrainz hard open-edit limit of '+OPEN_EDIT_HARD_LIMIT+'.','error'); return; }
+    if (projectedDaily > DAILY_LIMIT) { status('BLOCKED: other edits today ('+otherDaily+') + local ledger ('+localDaily+') + this batch ('+ready.length+') exceeds the daily limit of '+DAILY_LIMIT+'.','error'); return; }
     const prod=location.hostname==='musicbrainz.org';
     if(prod){const phrase='SUBMIT '+ready.length;if(prompt('PRODUCTION: '+ready.length+' public VOTABLE edits. Type '+phrase)!==phrase)return;}
     else if(!confirm('TEST SERVER: submit '+ready.length+' votable edits?'))return;
@@ -176,20 +248,20 @@
       '<div class="small">'+esc(location.host)+' · '+(location.hostname==='musicbrainz.org'?'PRODUCTION':'TEST')+' · Session: '+esc(userHint())+'</div>'+
       '<label class="confirm"><input type="checkbox" id="db-account"> <span id="db-account-label"></span></label>'+
       '<label class="file">Load submission_batch.json <input type="file" id="db-file" accept=".json,application/json"></label>'+
-      '<div id="db-count">No queue loaded</div><div id="db-summary">Only AUTO_CANDIDATE rows are accepted; maximum 150.</div>'+
+      '<div id="db-count">No queue loaded</div><div id="db-summary">Only AUTO_CANDIDATE rows from Stage 2 v5; maximum 150; exact server match required.</div>'+'<div class="db-policy"><div id="db-open-count">Open edits: not checked</div><div id="db-blacklist-count">Official Discogs blacklist: not checked</div><label>Other bot edits already submitted today outside this browser (enter 0 if none): <input type="number" min="0" step="1" id="db-other-daily" value="0"></label></div>'+
       '<div class="actions"><button id="db-check" disabled>1. Check existing links</button><button id="db-submit" disabled>Submit 0 READY as votable</button></div>'+
       '<progress id="db-progress" max="100" value="0"></progress><div id="db-progress-text">Idle</div>'+
       '<div id="db-status" data-kind="info">No edit is sent before preflight and explicit confirmation. The bot never votes or auto-approves.</div>'+
       '<div class="table"><table><thead><tr><th>Release</th><th>Discogs ID</th><th>Status</th></tr></thead><tbody id="db-rows"></tbody></table></div>'+
-      '<button id="db-download" disabled>Download TSV report</button><div class="small">Votable edits · fresh pre-POST check · 1.1 s request spacing · no automatic POST retries · local duplicate ledger</div>';
+      '<button id="db-download" disabled>Download TSV report</button><div class="small">Votable edits · login checked every run · fresh official blacklist · open-edit/daily caps · fresh pre-POST check · 1.1 s spacing · no automatic POST retries · local ledger</div>';
     const style=document.createElement('style');
-    style.textContent='#discogsbot-stage3{position:fixed;z-index:2147483647;right:16px;bottom:16px;width:min(650px,calc(100vw - 32px));max-height:80vh;overflow:auto;background:#fff;color:#202124;border:1px solid #777;border-radius:9px;box-shadow:0 5px 24px #0005;padding:12px;font:13px/1.4 Arial,sans-serif}#discogsbot-stage3 *{box-sizing:border-box}#discogsbot-stage3 .head,#discogsbot-stage3 .actions{display:flex;justify-content:space-between;gap:8px;align-items:center}#discogsbot-stage3 button{cursor:pointer;padding:7px 10px;border:1px solid #888;border-radius:5px;background:#f4f4f4;color:#111}#discogsbot-stage3 button:disabled{opacity:.45;cursor:not-allowed}#discogsbot-stage3 .small{font-size:11px;color:#555;margin:6px 0}#discogsbot-stage3 .confirm{display:block;padding:8px;background:#fff7e6;margin:8px 0}#discogsbot-stage3 .file{display:block;font-weight:bold;margin:8px 0}#discogsbot-stage3 input[type=file]{display:block;max-width:100%;margin-top:4px}#discogsbot-stage3 #db-summary{padding:7px;background:#f4f4f4;margin:7px 0}#discogsbot-stage3 progress{width:100%}#discogsbot-stage3 #db-status{padding:8px;background:#f6f6f6;border-left:4px solid #777;margin:7px 0;overflow-wrap:anywhere}#discogsbot-stage3 #db-status[data-kind=success]{border-color:#16803c}#discogsbot-stage3 #db-status[data-kind=error]{border-color:#b42318}#discogsbot-stage3 .table{max-height:190px;overflow:auto;border:1px solid #ddd}#discogsbot-stage3 table{border-collapse:collapse;width:100%;font-size:11px}#discogsbot-stage3 th,#discogsbot-stage3 td{text-align:left;padding:4px 6px;border-bottom:1px solid #ddd}#discogsbot-stage3 th{position:sticky;top:0;background:#eee}';
+    style.textContent='#discogsbot-stage3 .db-policy{display:grid;gap:5px;padding:7px;background:#fff8e8;margin:7px 0;font-size:11px}#discogsbot-stage3 .db-policy input{width:76px;margin-left:6px}#discogsbot-stage3{position:fixed;z-index:2147483647;right:16px;bottom:16px;width:min(650px,calc(100vw - 32px));max-height:80vh;overflow:auto;background:#fff;color:#202124;border:1px solid #777;border-radius:9px;box-shadow:0 5px 24px #0005;padding:12px;font:13px/1.4 Arial,sans-serif}#discogsbot-stage3 *{box-sizing:border-box}#discogsbot-stage3 .head,#discogsbot-stage3 .actions{display:flex;justify-content:space-between;gap:8px;align-items:center}#discogsbot-stage3 button{cursor:pointer;padding:7px 10px;border:1px solid #888;border-radius:5px;background:#f4f4f4;color:#111}#discogsbot-stage3 button:disabled{opacity:.45;cursor:not-allowed}#discogsbot-stage3 .small{font-size:11px;color:#555;margin:6px 0}#discogsbot-stage3 .confirm{display:block;padding:8px;background:#fff7e6;margin:8px 0}#discogsbot-stage3 .file{display:block;font-weight:bold;margin:8px 0}#discogsbot-stage3 input[type=file]{display:block;max-width:100%;margin-top:4px}#discogsbot-stage3 #db-summary{padding:7px;background:#f4f4f4;margin:7px 0}#discogsbot-stage3 progress{width:100%}#discogsbot-stage3 #db-status{padding:8px;background:#f6f6f6;border-left:4px solid #777;margin:7px 0;overflow-wrap:anywhere}#discogsbot-stage3 #db-status[data-kind=success]{border-color:#16803c}#discogsbot-stage3 #db-status[data-kind=error]{border-color:#b42318}#discogsbot-stage3 .table{max-height:190px;overflow:auto;border:1px solid #ddd}#discogsbot-stage3 table{border-collapse:collapse;width:100%;font-size:11px}#discogsbot-stage3 th,#discogsbot-stage3 td{text-align:left;padding:4px 6px;border-bottom:1px solid #ddd}#discogsbot-stage3 th{position:sticky;top:0;background:#eee}';
     document.documentElement.appendChild(style);document.body.appendChild(panel);
     panel.querySelector('#db-close').onclick=()=>{panel.remove();style.remove();panel=null;};
     panel.querySelector('#db-account').onchange=render;panel.querySelector('#db-check').onclick=preflight;panel.querySelector('#db-submit').onclick=submit;panel.querySelector('#db-download').onclick=download;
     panel.querySelector('#db-file').onchange=async e=>{
-      try{queue=validate(JSON.parse(await e.target.files[0].text()));checked=[];results=[];complete=false;panel.querySelector('#db-account').checked=false;panel.querySelector('#db-summary').textContent=(queue.batch_id||'batch')+' · '+queue.items.length+' items · '+(queue.source_engine||'v5')+' · AUTO_CANDIDATE only';status('Queue loaded. Run read-only preflight. Submission requires the exact account '+EXPECTED_BOT_USER+'.','success');}
-      catch(err){queue=null;checked=[];results=[];complete=false;status('Queue rejected: '+err.message,'error');}render();
+      try{queue=validate(JSON.parse(await e.target.files[0].text()));checked=[];results=[];complete=false;currentBlacklist=null;openEditCount=null;blacklistCheckedAt=null;panel.querySelector('#db-account').checked=false;panel.querySelector('#db-summary').textContent=(queue.batch_id||'batch')+' · '+queue.items.length+' items · '+queue.source_engine+' · target: '+queue.target_server+' · AUTO_CANDIDATE only';status('Queue loaded. Run preflight to verify login, open edits, current blacklist and existing relationships.','success');}
+      catch(err){queue=null;checked=[];results=[];complete=false;currentBlacklist=null;openEditCount=null;blacklistCheckedAt=null;status('Queue rejected: '+err.message,'error');}render();
     };
     render();
   }
