@@ -2,7 +2,7 @@
 
 A conservative, auditable toolset for checking whether a proposed Discogs release URL matches a specific MusicBrainz release.
 
-**Current status: read-only. This repository does not submit edits to MusicBrainz or authenticate to MusicBrainz as an editing bot.** `AUTO_CANDIDATE` means a record passed the checks implemented here; it is not, by itself, permission to create a public edit.
+**Current status:** Stage 1 and Stage 2 v5 are read-only. An optional, separate Stage 3 userscript is provided for controlled submission of reviewed `AUTO_CANDIDATE` rows as **votable** MusicBrainz edits. Stage 3 has not yet completed its mandatory live smoke test on the MusicBrainz test server. Do not use it for production submissions until that test succeeds. `AUTO_CANDIDATE` means a record passed the implemented metadata checks; it is not, by itself, permission to create a public edit.
 
 ## What it does
 
@@ -14,9 +14,9 @@ A conservative, auditable toolset for checking whether a proposed Discogs releas
 
 ## Scope and safety boundary
 
-This code is intentionally read-only. It does not authenticate to MusicBrainz for editing, submit URL relationships, cast votes, or cancel edits. A future edit-submission stage must be implemented, reviewed, and tested separately before any public edits are attempted.
+Stage 1 and Stage 2 are intentionally read-only. Stage 3 is a separate optional Tampermonkey userscript that can submit one Release → URL → Discogs relationship per request with `makeVotable` enabled. It never votes, auto-approves, or cancels edits. Stage 3 uses MusicBrainz internal website endpoints rather than a documented stable public API; it must be smoke-tested on the MusicBrainz test server before production use. See [Stage 3 documentation](stage3/README.md).
 
-Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained metadata can contain errors on either service. The report is a selection aid, not a substitute for a carefully tested editing workflow.
+Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained metadata can contain errors on either service. The report is a selection aid, not a substitute for a carefully tested editing workflow. Review every pilot batch and monitor community feedback.
 
 ## Requirements
 
@@ -24,6 +24,7 @@ Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained me
 - Windows PowerShell for the included `.ps1` wrapper (the Python scripts themselves use the standard library only).
 - A local MusicBrainz mirror exposing the `/ws/2` API, defaulting to `http://localhost:5000`.
 - A Discogs personal API token for Stage 2.
+- For optional Stage 3: a current browser session signed in as the dedicated MusicBrainz bot account and Tampermonkey.
 - Internet access to read Discogs release data and the official MusicBrainz Discogs release blacklist.
 
 The tool makes no MusicBrainz database writes. Discogs requests are throttled (default minimum interval 1.1 seconds between uncached requests) and transient HTTP failures are retried with backoff.
@@ -107,9 +108,13 @@ py -m unittest discover -s .\tests -v
 
 The tests validate comparison logic only. They do not replace live API testing or confirm that any proposed edit is correct.
 
+## Stage 3 — optional votable edit submission
+
+See [`stage3/README.md`](stage3/README.md) for the separate Tampermonkey submitter, queue generator, mandatory test-server smoke test, safeguards, and pilot procedure. Stage 3 is not a stable public API client and must not be used in production until its test-server submission has been verified.
+
 ## MusicBrainz bot readiness
 
-Read [`docs/MUSICBRAINZ_BOT_READINESS.md`](docs/MUSICBRAINZ_BOT_READINESS.md) before planning any edit submission. MusicBrainz requires bot owners to contact the team to have the account type set to `Bot`, test carefully on the test server, open-source the bot code, and link the source from the bot profile. This repository currently contains only the read-only stages.
+Read [`docs/MUSICBRAINZ_BOT_READINESS.md`](docs/MUSICBRAINZ_BOT_READINESS.md) before any public edits. The dedicated account must have its type set to `Bot`; the public source must be linked from the bot profile; and Stage 3 must pass a careful test-server smoke test.
 
 ## License
 
