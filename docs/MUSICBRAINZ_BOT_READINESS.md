@@ -26,8 +26,8 @@ Official references:
 
 ## Conservative operating policy for this project
 
-- Maximum planned batch size: 500 edits. This is a project limit, not the official daily limit.
-- Maximum planned daily submissions: 500 edits, unless the maintainer re-evaluates this after community review.
+- Maximum batch size during the pilot phase: 150 edits; the first production pilot is capped at 100. These are project limits, not official MusicBrainz limits.
+- Maximum planned daily submissions during the pilot phase: 150 edits. Re-evaluate only after community review and a review of the bot's open-edit count.
 - Check the bot's current open-edit count before every batch. Do not approach the recommended 2,000 open edits; the documented hard limit is 2,500.
 - Stop immediately if a match is questioned, an unexpected edit result occurs, the open-edit count is uncertain, or the API reports repeated errors.
 - Do not automatically resubmit edits that failed or were rejected.
