@@ -27,7 +27,7 @@ Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained me
 - For optional Stage 3: a current browser session signed in as the dedicated MusicBrainz bot account and Tampermonkey.
 - Internet access to read Discogs release data and the official MusicBrainz Discogs release blacklist.
 
-The tool makes no MusicBrainz database writes. Discogs requests are throttled (default minimum interval 1.1 seconds between uncached requests) and transient HTTP failures are retried with backoff.
+Stages 1 and 2 make no MusicBrainz database writes. Stage 3 is the separate optional write path described above. Discogs requests in Stage 2 are throttled (default minimum interval 1.1 seconds between uncached requests) and transient HTTP failures are retried with backoff.
 
 ## Input format
 
