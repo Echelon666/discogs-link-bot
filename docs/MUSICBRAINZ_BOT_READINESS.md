@@ -12,7 +12,7 @@ Official references:
 ## Required before public edits
 
 - [x] Contact the MusicBrainz team and request that the dedicated bot account type be set to `Bot` (maintainer reports that the team has approved this and changed the account type).
-- [x] Confirm that public submissions are being made from the dedicated bot account, not a maintainer's personal account.
+- [x] Require the dedicated bot account, not a maintainer's personal account, for any future production submission.
 - [x] Keep the source repository public.
 - [ ] Link the source repository from the bot's user page.
 - [ ] State on the bot's user page who maintains the bot.
