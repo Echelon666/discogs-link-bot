@@ -11,16 +11,17 @@ Official references:
 
 ## Required before public edits
 
-- [ ] Contact the MusicBrainz team and request that the dedicated bot account type be set to `Bot`.
-- [ ] Do not submit edits until the account type has been set to `Bot`.
-- [ ] Make the source repository public and link it from the bot's user page.
+- [x] Contact the MusicBrainz team and request that the dedicated bot account type be set to `Bot` (maintainer reports that the team has approved this and changed the account type).
+- [x] Confirm that public submissions are being made from the dedicated bot account, not a maintainer's personal account.
+- [x] Keep the source repository public.
+- [ ] Link the source repository from the bot's user page.
 - [ ] State on the bot's user page who maintains the bot.
-- [ ] Implement the edit-submission stage separately from this read-only verifier.
-- [ ] Implement the required MusicBrainz login behavior for every bot run, including runs where no edits are ultimately made.
-- [ ] Test the submission workflow carefully on the MusicBrainz test server.
+- [x] Implement a separate Stage 3 submitter without changing the Stage 1/Stage 2 verifier.
+- [ ] Confirm the bot login/session behavior and required login policy for each run, including runs where no edits are ultimately made.
+- [ ] Complete a one-record votable submission smoke test on the MusicBrainz test server and verify the resulting open edit.
 - [ ] Confirm the current blacklist and other policy requirements are implemented for each relevant entity type before edits.
-- [ ] Include clear edit notes with the Discogs release source and the evidence used for the match.
-- [ ] Record each attempted edit and its result; handle retries idempotently so an interrupted run does not duplicate edits.
+- [x] Include clear edit notes with the Discogs release source, v5 verification reasons, and any normalizations.
+- [x] Record accepted submissions locally and stop on ambiguous POST outcomes; never retry an uncertain submission automatically.
 - [ ] Review comments and edit notes from the MusicBrainz community and respond in a reasonable time.
 
 ## Conservative operating policy for this project
@@ -34,4 +35,4 @@ Official references:
 
 ## Current limitation
 
-The present repository is read-only and does not submit MusicBrainz edits or authenticate to MusicBrainz as a bot. The checkboxes related to submission must remain unchecked until a separate write stage is developed and tested.
+Stage 1 and Stage 2 remain read-only. A separate Stage 3 userscript has been added, but it is **not yet live-tested**. Do not submit production edits until the test-server smoke test above is completed, the bot profile links to this repository and maintainer, and the bot's session/login policy is confirmed. The Stage 3 website endpoint is internal and may change.
