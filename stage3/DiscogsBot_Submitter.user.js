@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DiscogsBot Stage 3 — Votable Release Link Submitter
 // @namespace    https://musicbrainz.org/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Submit reviewed DiscogsBot v5 candidates as votable MusicBrainz release URL edits.
 // @match        https://musicbrainz.org/*
 // @match        https://test.musicbrainz.org/*
