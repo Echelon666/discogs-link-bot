@@ -81,6 +81,8 @@
   }
   function validate(data) {
     if (!data || data.schema_version !== 1 || !Array.isArray(data.items) || !data.items.length || data.items.length > MAX_BATCH) throw Error('Invalid queue schema or size (maximum 150).');
+    if (Number(data.selected_count) !== data.items.length) throw Error('Queue selected_count does not match the actual item count.');
+    if (!Number.isInteger(Number(data.eligible_auto_candidates)) || Number(data.eligible_auto_candidates) < data.items.length) throw Error('Queue AUTO_CANDIDATE source count is invalid.');
     if (data.source_engine !== 'DiscogsBot Stage 2 v5') throw Error('Queue must originate from the official DiscogsBot Stage 2 v5 report.');
     if (data.target_server !== location.hostname) throw Error('Queue target is ' + (data.target_server || 'unspecified') + ', but this page is ' + location.hostname + '. Refusing cross-server submission.');
     const policy = data.submission_policy || {};
@@ -88,7 +90,9 @@
     const mbids = new Set(), ids = new Set();
     data.items.forEach((x,i) => {
       const id = discogsID(x.discogs_url), mbid = String(x.mbid || '').toLowerCase();
+      const reason = String(x.reason || '');
       if (x.status !== 'AUTO_CANDIDATE' || !mbidOK(mbid) || !id || id !== String(x.discogs_release_id)) throw Error('Invalid item ' + (i+1) + ': status, MBID or Discogs URL.');
+      for (const required of ['ARTIST_MATCH','TITLE_MATCH','BARCODE_MATCH','NOT_BLACKLISTED']) if (!reason.split(';').includes(required)) throw Error('Item ' + (i+1) + ' lacks required v5 verification finding: ' + required);
       if (mbids.has(mbid) || ids.has(id)) throw Error('Duplicate MBID or Discogs Release ID in queue.');
       mbids.add(mbid); ids.add(id); x.mbid = mbid;
     });
@@ -168,9 +172,12 @@
   function note(item) {
     return [
       'Added the corresponding Discogs release page after Discogs Link Bot v5 conservative metadata verification.',
-      'v5 checks artist, title, barcode and all available label/catalog-number data.',
-      'v5 result: '+(item.reason||'AUTO_CANDIDATE')+'.',
-      item.normalization_actions?'Safe normalizations: '+item.normalization_actions+'.':'',
+      'v5 artist/title match: '+(item.artist_match_type || 'verified')+' / '+(item.title_match_type || 'verified')+'.',
+      'MusicBrainz barcode: '+(item.mb_barcode || '[not supplied]')+'.',
+      'MusicBrainz label/catalog: '+(item.mb_labels || '[none]')+' / '+(item.mb_catalog_numbers || '[none]')+'.',
+      'Discogs label/catalog: '+(item.discogs_labels || '[none]')+' / '+(item.discogs_catalog_numbers || '[none]')+'.',
+      'v5 findings: '+(item.reason||'AUTO_CANDIDATE')+'.',
+      item.normalization_actions?'Safe normalizations: '+item.normalization_actions+'.':'No normalization actions were required.',
       'Bot source: https://github.com/Echelon666/discogs-link-bot'
     ].filter(Boolean).join('\n');
   }
