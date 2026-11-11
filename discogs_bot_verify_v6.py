@@ -997,7 +997,8 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
 
     year_mode, mb_year, dg_year, year_details = compare_release_years(mb, dg)
     result["mb_release_year"] = mb_year
-    result["discogs_api_year"] = dg_year    result["year_check"] = year_mode
+    result["discogs_api_year"] = dg_year
+    result["year_check"] = year_mode
     result["year_details"] = year_details
     if year_mode == "MISSING":
         findings.append(("MANUAL_YEAR_MISSING", "RELEASE_YEAR_MISSING_IN_MUSICBRAINZ_OR_DISCOGS"))
