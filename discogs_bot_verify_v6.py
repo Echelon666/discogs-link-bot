@@ -997,7 +997,8 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
     # on a single Discogs labels entry; the Records suffix exception also requires
     # a matching catalog number on that same entry.
     mb_complete_pairs = [(label, catno) for label, catno in mb_pairs if label and catno]
-    pair_misses: list[str] = []    pair_normalized = False
+    pair_misses: list[str] = []
+    pair_normalized = False
     pair_suffix_used = False
     if mb_complete_pairs:
         for mb_label, mb_cat in mb_complete_pairs:
