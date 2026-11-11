@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0 — Stage 2 v6 release-identity verification
+
+- Retain the v5 conservative artist, title, barcode, label, catalog-number, blacklist, and existing-relationship checks.
+- Add mandatory comparison of MusicBrainz medium formats and counts against Discogs release formats and quantities.
+- Add a specific-release year check using MusicBrainz Release date and Discogs `year` / `released` values; ambiguous source values route to manual review.
+- Add a specific-release country/area check with conservative ISO alpha-2 mapping and explicit MusicBrainz special-area handling.
+- Add detailed `media_format_check`, `year_check`, and `country_check` report columns, raw source values, and reason-coded `MANUAL_*` outcomes.
+- Require all three new checks to match before assigning `AUTO_CANDIDATE`.
+- Use a dedicated v6 output and cache directory; do not reuse v5 cache data because the MusicBrainz request now includes media.
+- Add offline tests for format aliases/counts, year conflicts, country aliases/ambiguity, and end-to-end status selection.
+- Keep Stage 2 read-only; no MusicBrainz edits are submitted.
+
 ## v0.2.0 — v5 conservative verification
 
 - Evaluate all available metadata fields before assigning the primary status.
