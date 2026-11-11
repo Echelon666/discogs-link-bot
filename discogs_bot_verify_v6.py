@@ -230,11 +230,16 @@ _COUNTRY_NAME_TO_ISO.update({
 })
 
 _MEDIA_FORMAT_ALIASES = {
+    # CD-family names share the same physical carrier for this check.
     "cd": "CD", "compact disc": "CD", "cd r": "CD", "cd g": "CD", "enhanced cd": "CD",
-    "vinyl": "VINYL", "vinyl record": "VINYL", "record": "VINYL",
+    "hdcd": "CD", "shm cd": "CD", "super high material cd": "CD",
+    # Vinyl size is a subtype; compare carrier plus quantity, not the inch size.
+    "vinyl": "VINYL", "vinyl record": "VINYL", "record": "VINYL", "lp": "VINYL",
     "cassette": "CASSETTE", "cassette tape": "CASSETTE", "compact cassette": "CASSETTE",
+    # Digital file quantity is track/file count, not physical-medium count.
     "digital media": "DIGITAL", "file": "DIGITAL", "digital": "DIGITAL", "download": "DIGITAL",
     "dvd": "DVD", "digital versatile disc": "DVD", "dvd r": "DVD",
+    "dvd video": "DVD-VIDEO", "dvd v": "DVD-VIDEO",
     "dvd audio": "DVD-AUDIO", "dvd a": "DVD-AUDIO",
     "blu ray": "BLU-RAY", "blu ray disc": "BLU-RAY",
     "sacd": "SACD", "super audio cd": "SACD",
@@ -248,6 +253,10 @@ _MEDIA_FORMAT_ALIASES = {
     "floppy disk": "FLOPPY", "cartridge": "CARTRIDGE",
 }
 
+# These Discogs entries describe packaging or an aggregate, not an additional
+# physical carrier. They remain visible in the report but are not counted.
+_DISCOGS_NON_CARRIER_FORMATS = {"all media", "box set"}
+
 
 def _compact_name(value: Any) -> str:
     value = unicodedata.normalize("NFKD", str(value or "")).casefold()
@@ -255,11 +264,29 @@ def _compact_name(value: Any) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).split())
 
 
-def normalize_media_format(value: Any) -> str | None:
-    """Map known MB/Discogs carrier names to a conservative shared vocabulary."""
+def normalize_media_format(value: Any, descriptions: Any = None) -> str | None:
+    """Map MB and Discogs names to a shared carrier vocabulary.
+
+    DVD-Audio and DVD-Video remain distinct when Discogs supplies the matching
+    description. A generic Discogs DVD is kept generic and cannot prove a match
+    to either MusicBrainz subtype.
+    """
     key = _compact_name(value)
-    if not key or key == "all media":
+    if not key or key in _DISCOGS_NON_CARRIER_FORMATS:
         return None
+    if re.fullmatch(r"\d+(?:\s+inch)?\s+vinyl", key):
+        return "VINYL"
+    if key == "dvd":
+        descs = descriptions if isinstance(descriptions, list) else []
+        desc_keys = {_compact_name(x) for x in descs}
+        has_audio = bool(desc_keys & {"dvd audio", "dvd a"})
+        has_video = bool(desc_keys & {"dvd video", "dvd v"})
+        if has_audio and has_video:
+            return None
+        if has_audio:
+            return "DVD-AUDIO"
+        if has_video:
+            return "DVD-VIDEO"
     return _MEDIA_FORMAT_ALIASES.get(key)
 
 
@@ -282,6 +309,10 @@ def _format_counts_from_musicbrainz(release: dict[str, Any]) -> tuple[Counter[st
         canonical = normalize_media_format(name)
         if canonical is None:
             unknown.append(name)
+        elif canonical == "DIGITAL":
+            # A MusicBrainz digital medium contains tracks/files; it is not one
+            # physical disc per track or per file. Presence is what matters.
+            counts[canonical] = 1
         else:
             counts[canonical] += 1
     return counts, raw, unknown
@@ -302,16 +333,24 @@ def _format_counts_from_discogs(release: dict[str, Any]) -> tuple[Counter[str], 
         if not name:
             unknown.append("[missing Discogs format name]")
             continue
-        if _compact_name(name) == "all media":
-            raw.append(name)
+        name_key = _compact_name(name)
+        if name_key in _DISCOGS_NON_CARRIER_FORMATS:
+            raw.append(f"{name} (ignored: packaging/aggregate descriptor)")
             continue
-        canonical = normalize_media_format(name)
+        descriptions = item.get("descriptions", [])
+        canonical = normalize_media_format(name, descriptions=descriptions)
         if canonical is None:
             raw.append(name)
             unknown.append(name)
             continue
         qty_value = item.get("qty")
         qty_raw = "" if qty_value is None else str(qty_value).strip()
+        if canonical == "DIGITAL":
+            # Discogs File qty counts digital files/tracks, not physical media.
+            # Compare digital presence only and do not require a numeric qty.
+            counts[canonical] = 1
+            raw.append(f"{name} (digital; qty not used: {qty_raw or 'not supplied'})")
+            continue
         if not qty_raw or not qty_raw.isdigit() or int(qty_raw) < 1:
             raw.append(name)
             unknown.append(f"{name} (invalid qty: {qty_raw or 'missing'})")
@@ -322,7 +361,7 @@ def _format_counts_from_discogs(release: dict[str, Any]) -> tuple[Counter[str], 
 
 
 def compare_media_formats(mb_release: dict[str, Any], dg_release: dict[str, Any]) -> tuple[str, str, str, str]:
-    """Compare medium types and quantities; unknown values never auto-match."""
+    """Compare carrier types and physical quantities; unknown values fail closed."""
     mb_counts, mb_raw, mb_unknown = _format_counts_from_musicbrainz(mb_release)
     dg_counts, dg_raw, dg_unknown = _format_counts_from_discogs(dg_release)
     mb_display = "; ".join(mb_raw)
@@ -334,9 +373,19 @@ def compare_media_formats(mb_release: dict[str, Any], dg_release: dict[str, Any]
         return "UNMAPPABLE", mb_display, dg_display, detail.strip(" ;")
     if not mb_counts or not dg_counts:
         return "MISSING", mb_display, dg_display, "No concrete medium type was available."
+
+    # A generic Discogs DVD does not state whether it is DVD-Audio or DVD-Video.
+    # Do not call it a match or mismatch against a specific MusicBrainz subtype.
+    for generic, specific in (("DVD", "DVD-AUDIO"), ("DVD", "DVD-VIDEO")):
+        if (mb_counts.get(generic, 0) and dg_counts.get(specific, 0)) or \
+           (dg_counts.get(generic, 0) and mb_counts.get(specific, 0)):
+            return "UNMAPPABLE", mb_display, dg_display, "Discogs/MB DVD subtype is not specified consistently enough to confirm the medium."
+
     if mb_counts != dg_counts:
         return "MISMATCH", mb_display, dg_display, f"MusicBrainz={dict(sorted(mb_counts.items()))}; Discogs={dict(sorted(dg_counts.items()))}"
-    return "MATCH", mb_display, dg_display, ""
+    ignored = [v for v in dg_raw if "(ignored:" in v]
+    detail = "Ignored non-carrier Discogs descriptors: " + ", ".join(ignored) if ignored else ""
+    return "MATCH", mb_display, dg_display, detail
 
 
 def _year_from_value(value: Any) -> int | None:
@@ -411,10 +460,28 @@ def _mb_country_codes(release: dict[str, Any]) -> tuple[set[str], str]:
     return set(), ""
 
 
+_EUROPE_COUNTRY_CODES = frozenset({
+    "AD", "AL", "AT", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DE", "DK",
+    "EE", "ES", "FI", "FO", "FR", "GB", "GE", "GI", "GR", "HR", "HU", "IE",
+    "IS", "IT", "LI", "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL",
+    "NO", "PL", "PT", "RO", "RS", "RU", "SE", "SI", "SK", "SM", "TR", "UA", "VA",
+})
+
+_COUNTRY_COMPOUND_AREAS = {
+    "uk europe": "AREA:UK_EUROPE",
+    "uk ireland": "AREA:UK_IRELAND",
+    "australia new zealand": "AREA:AU_NZ",
+    "uk europe us": "AREA:UK_EUROPE_US",
+}
+
+
 def normalize_discogs_country(value: Any) -> str | None:
+    """Normalize a single Discogs country/area; known compound territories stay explicit."""
     key = _compact_name(value)
     if not key:
         return None
+    if key in _COUNTRY_COMPOUND_AREAS:
+        return _COUNTRY_COMPOUND_AREAS[key]
     direct = _COUNTRY_NAME_TO_ISO.get(str(value).strip().casefold())
     if direct:
         return direct
@@ -424,6 +491,26 @@ def normalize_discogs_country(value: Any) -> str | None:
     if re.fullmatch(r"[a-z]{2}", key):
         return key.upper()
     return None
+
+
+def _country_area_members(code: str) -> set[str] | None:
+    """Return known member countries for broad areas; None means worldwide."""
+    if code == "XW":
+        return None
+    if code == "XE":
+        return set(_EUROPE_COUNTRY_CODES)
+    if code == "AREA:UK_EUROPE":
+        return set(_EUROPE_COUNTRY_CODES) | {"GB"}
+    if code == "AREA:UK_IRELAND":
+        return {"GB", "IE"}
+    if code == "AREA:AU_NZ":
+        return {"AU", "NZ"}
+    if code == "AREA:UK_EUROPE_US":
+        return set(_EUROPE_COUNTRY_CODES) | {"US"}
+    # A specific ISO country is a one-member territory for overlap testing.
+    if re.fullmatch(r"[A-Z]{2}", code):
+        return {code}
+    return set()
 
 
 def compare_release_countries(mb_release: dict[str, Any], dg_release: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -440,6 +527,24 @@ def compare_release_countries(mb_release: dict[str, Any], dg_release: dict[str, 
     if len(mb_codes) != 1:
         return "AMBIGUOUS", mb_display, dg_raw, "MusicBrainz country is not unique."
     mb_code = next(iter(mb_codes))
+    if mb_code == dg_code:
+        return "MATCH", mb_code, dg_raw, ""
+
+    mb_members = _country_area_members(mb_code)
+    dg_members = _country_area_members(dg_code)
+    if mb_code == "XW" or dg_code == "XW":
+        return "AMBIGUOUS", mb_code, dg_raw, "Worldwide overlaps every specific country/area; country specificity cannot be confirmed."
+
+    mb_is_region = mb_code.startswith("AREA:") or mb_code == "XE"
+    dg_is_region = dg_code.startswith("AREA:") or dg_code == "XE"
+    if mb_is_region or dg_is_region:
+        if mb_members is None or dg_members is None:
+            return "AMBIGUOUS", mb_code, dg_raw, "One side is a broad/compound territory; exact country equality cannot be confirmed."
+        overlap = mb_members.intersection(dg_members)
+        if overlap:
+            return "AMBIGUOUS", mb_code, dg_raw, "The territories overlap (" + ",".join(sorted(overlap)) + "); they are not the same level of geographic specificity."
+        return "MISMATCH", mb_code, dg_raw, f"MusicBrainz={mb_code}; Discogs={dg_raw} ({dg_code}); territories do not overlap."
+
     if mb_code != dg_code:
         return "MISMATCH", mb_code, dg_raw, f"MusicBrainz={mb_code}; Discogs={dg_raw} ({dg_code})"
     return "MATCH", mb_code, dg_raw, ""
@@ -892,8 +997,7 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
 
     year_mode, mb_year, dg_year, year_details = compare_release_years(mb, dg)
     result["mb_release_year"] = mb_year
-    result["discogs_api_year"] = dg_year
-    result["year_check"] = year_mode
+    result["discogs_api_year"] = dg_year    result["year_check"] = year_mode
     result["year_details"] = year_details
     if year_mode == "MISSING":
         findings.append(("MANUAL_YEAR_MISSING", "RELEASE_YEAR_MISSING_IN_MUSICBRAINZ_OR_DISCOGS"))

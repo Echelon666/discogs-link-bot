@@ -23,12 +23,82 @@ class MediumFormatTests(unittest.TestCase):
         self.assertEqual(dg, "CD x1")
         self.assertEqual(detail, "")
 
-    def test_digital_media_matches_discogs_file(self):
-        status, *_ = BOT.compare_media_formats(
+    def test_digital_media_matches_discogs_file_count_is_not_disc_count(self):
+        status, mb, dg, _ = BOT.compare_media_formats(
             {"media": [{"format": "Digital Media"}]},
-            {"formats": [{"name": "File", "qty": "1"}]},
+            {"formats": [{"name": "File", "qty": "11"}]},
         )
         self.assertEqual(status, "MATCH")
+        self.assertIn("Digital Media", mb)
+        self.assertIn("File (digital; qty not used: 11)", dg)
+
+    def test_digital_file_does_not_require_quantity(self):
+        self.assertEqual(
+            BOT.compare_media_formats(
+                {"media": [{"format": "Digital Media"}]},
+                {"formats": [{"name": "File"}]},
+            )[0],
+            "MATCH",
+        )
+
+    def test_box_set_is_ignored_as_packaging_not_a_medium(self):
+        status, _, dg, details = BOT.compare_media_formats(
+            {"media": [{"format": "CD"}, {"format": "CD"}, {"format": "CD"}]},
+            {"formats": [
+                {"name": "CD", "qty": "3", "descriptions": ["Album"]},
+                {"name": "Box Set", "qty": "1", "descriptions": ["Limited Edition"]},
+            ]},
+        )
+        self.assertEqual(status, "MATCH")
+        self.assertIn("Box Set (ignored:", dg)
+        self.assertIn("Box Set", details)
+
+    def test_hdcd_and_shm_cd_match_cd_carrier(self):
+        for mb_format in ("HDCD", "SHM-CD"):
+            with self.subTest(mb_format=mb_format):
+                self.assertEqual(
+                    BOT.compare_media_formats(
+                        {"media": [{"format": mb_format}]},
+                        {"formats": [{"name": "CD", "qty": "1"}]},
+                    )[0],
+                    "MATCH",
+                )
+
+    def test_vinyl_size_does_not_change_carrier_type(self):
+        self.assertEqual(
+            BOT.compare_media_formats(
+                {"media": [{"format": '12" Vinyl'}, {"format": '12" Vinyl'}]},
+                {"formats": [{"name": "Vinyl", "qty": "2"}]},
+            )[0],
+            "MATCH",
+        )
+
+    def test_dvd_video_matches_specific_discogs_description(self):
+        self.assertEqual(
+            BOT.compare_media_formats(
+                {"media": [{"format": "DVD-Video"}]},
+                {"formats": [{"name": "DVD", "qty": "1", "descriptions": ["DVD-Video"]}]},
+            )[0],
+            "MATCH",
+        )
+
+    def test_generic_dvd_cannot_prove_dvd_audio_or_video(self):
+        self.assertEqual(
+            BOT.compare_media_formats(
+                {"media": [{"format": "DVD-Video"}]},
+                {"formats": [{"name": "DVD", "qty": "1", "descriptions": ["Album"]}]},
+            )[0],
+            "UNMAPPABLE",
+        )
+
+    def test_dvd_audio_and_dvd_video_are_different_subtypes(self):
+        self.assertEqual(
+            BOT.compare_media_formats(
+                {"media": [{"format": "DVD-Audio"}]},
+                {"formats": [{"name": "DVD", "qty": "1", "descriptions": ["DVD-Video"]}]},
+            )[0],
+            "MISMATCH",
+        )
 
     def test_cd_does_not_match_digital_file(self):
         status, *_ = BOT.compare_media_formats(
@@ -145,10 +215,46 @@ class CountryTests(unittest.TestCase):
             "MISSING",
         )
 
-    def test_compound_unknown_region_is_unmappable(self):
+    def test_compound_uk_europe_region_overlapping_gb_is_ambiguous(self):
         self.assertEqual(
             BOT.compare_release_countries({"country": "GB"}, {"country": "UK & Europe"})[0],
-            "UNMAPPABLE",
+            "AMBIGUOUS",
+        )
+
+    def test_europe_region_overlapping_germany_is_ambiguous(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "DE"}, {"country": "Europe"})[0],
+            "AMBIGUOUS",
+        )
+
+    def test_europe_musicbrainz_area_and_discogs_netherlands_is_ambiguous(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "XE"}, {"country": "Netherlands"})[0],
+            "AMBIGUOUS",
+        )
+
+    def test_worldwide_and_specific_country_is_ambiguous_not_mismatch(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "XW"}, {"country": "US"})[0],
+            "AMBIGUOUS",
+        )
+
+    def test_worldwide_and_europe_are_ambiguous(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "XW"}, {"country": "Europe"})[0],
+            "AMBIGUOUS",
+        )
+
+    def test_known_compound_australia_new_zealand_region_is_ambiguous(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "NZ"}, {"country": "Australia & New Zealand"})[0],
+            "AMBIGUOUS",
+        )
+
+    def test_disjoint_europe_and_us_remain_mismatch(self):
+        self.assertEqual(
+            BOT.compare_release_countries({"country": "US"}, {"country": "Europe"})[0],
+            "MISMATCH",
         )
 
     def test_multiple_mb_event_countries_are_ambiguous(self):
@@ -273,6 +379,18 @@ class FullEvaluationTests(unittest.TestCase):
         result = self.evaluate()
         self.assertIn("MANUAL_MEDIA_FORMAT_MISSING", result["all_findings"])
         self.assertNotEqual(result["status"], "AUTO_CANDIDATE")
+
+    def test_already_linked_status_does_not_hide_v6_diagnostics(self):
+        self.mb["relations"] = [{
+            "url": {"resource": self.row["discogs_url"]},
+            "type": "discogs",
+        }]
+        self.dg["formats"] = [{"name": "File", "qty": "10"}]
+        self.dg["country"] = "Europe"
+        result = self.evaluate()
+        self.assertEqual(result["status"], "ALREADY_LINKED")
+        self.assertIn("MANUAL_MEDIA_FORMAT_MISMATCH", result["all_findings"])
+        self.assertIn("MANUAL_COUNTRY_AMBIGUOUS", result["all_findings"])
 
 
 if __name__ == "__main__":

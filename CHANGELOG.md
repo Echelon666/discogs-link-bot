@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.1 — refine medium and territory interpretation from pilot audit
+
+- Compare `Digital Media` and Discogs `File` by presence; ignore `File` quantity because it counts files/tracks, not physical discs.
+- Ignore Discogs `Box Set` and `All Media` as packaging/aggregate descriptors rather than additional carriers.
+- Normalize HDCD/SHM-CD and sized-vinyl names to their physical carrier; use Discogs descriptions to distinguish DVD-Audio from DVD-Video, and leave generic unspecified DVD subtypes manual.
+- Treat overlapping broad areas (Europe, Worldwide, and known compound regions) as ambiguous rather than claiming a definite country mismatch.
+- Expand offline coverage for the above rules and preserve the read-only/fail-closed behavior.
+
 ## v0.3.0 — Stage 2 v6 release-identity verification
 
 - Retain the v5 conservative artist, title, barcode, label, catalog-number, blacklist, and existing-relationship checks.

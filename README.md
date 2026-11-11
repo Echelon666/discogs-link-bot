@@ -9,7 +9,7 @@ A conservative, auditable toolset for checking whether a proposed Discogs releas
 - **Stage 1 — input preflight:** validates a four-column TSV input, checks MBID and Discogs release URL formats, detects duplicate MBIDs and Discogs-release-ID collisions, and writes review reports. No network requests are made.
 - **Stage 2 v6 — release verification:** compares one MusicBrainz Release with the specific Discogs Release URL supplied in the Stage 1 candidate file.
 - **Metadata checks:** artist credit, title, barcode, existing Discogs relationships, official MusicBrainz Discogs-release blacklist, label, and catalog number.
-- **Release-identity checks (new in v6):** medium format and quantity, specific release year, and specific release country/area.
+- **Release-identity checks (new in v6):** medium carrier/physical quantity, specific release year, and specific release country/area.
 - **Conservative normalization:** explicit typography, title-punctuation, catalog whitespace, and limited label-suffix equivalences. No fuzzy matching and no deletion of meaningful words, accents, digits, or word order.
 - **Auditable output:** TSV report with individual checks, normalization actions, details, and reason-coded statuses.
 
@@ -78,7 +78,7 @@ This verifies all rows in that exact 100-row file, preserving its MBIDs and orde
 
 ### Medium format and quantity
 
-MusicBrainz medium `format` values are compared with Discogs release `formats[].name` values. Discogs `qty` is compared with the number of corresponding MusicBrainz media. Common carrier names have explicit equivalences, including `Digital Media` ↔ `File`. Marketing descriptions such as `Album`, `Reissue`, and `Limited Edition` are not treated as carrier types. Missing formats, unknown formats, and missing/invalid Discogs quantities go to manual review. Multi-disc counts must agree.
+MusicBrainz medium `format` values are compared with Discogs release `formats[].name` and relevant subtype descriptions. Physical carrier quantities must agree. `Digital Media` ↔ `File` compares digital presence only: Discogs `File` quantity is a file/track count, not a physical-disc count, so it is deliberately ignored. Packaging/aggregate entries such as `Box Set` and `All Media` are reported but are not counted as additional carriers. CD carrier variants such as HDCD/SHM-CD and vinyl size variants normalize to their physical carrier. DVD-Audio and DVD-Video remain distinct; a generic DVD without a matching subtype description is manual/unmappable. Unknown formats and missing/invalid physical Discogs quantities go to manual review. Multi-disc physical counts must agree.
 
 ### Release year
 
@@ -86,7 +86,7 @@ The year of the specific MusicBrainz Release `date` is used; release-event years
 
 ### Release country/area
 
-The MusicBrainz Release country code is compared with the Discogs `country` field after conservative ISO alpha-2 mapping. If MusicBrainz has no direct country, release-event area codes are used only when exactly one unique country code is available. Known area equivalents include `UK` ↔ `GB`, `Europe` ↔ `XE`, and `Worldwide` ↔ `XW`. Unknown or compound regions (for example `UK & Europe`) and ambiguous multi-country events go to manual review.
+The MusicBrainz Release country code is compared with the Discogs `country` field after conservative ISO alpha-2 mapping. If MusicBrainz has no direct country, release-event area codes are used only when exactly one unique country code is available. Exact equivalents include `UK` ↔ `GB`, `Europe` ↔ `XE`, and `Worldwide` ↔ `XW`. A broad territory such as Europe/Worldwide, or a known compound territory such as `UK & Europe`, is not treated as a definite mismatch against a country it may include: it is routed to `MANUAL_COUNTRY_AMBIGUOUS`. Only demonstrably disjoint country/territory values are classified as mismatches. Unknown regions and ambiguous multi-country release events remain manual.
 
 ### Statuses added in v6
 
@@ -113,7 +113,7 @@ Run from the project directory:
 py -m unittest discover -s .\tests -v
 ```
 
-The v6 tests cover medium mapping and counts, year extraction/conflicts, country normalization/ambiguity, and end-to-end status selection. Offline tests do not replace a live recheck against the local MusicBrainz mirror and Discogs API.
+The v6 tests cover medium mapping/counts, file-count handling, packaging descriptors, DVD subtypes, year extraction/conflicts, country/territory overlap, and end-to-end status selection. Offline tests do not replace a live recheck against the local MusicBrainz mirror and Discogs API.
 
 ## Safety boundary
 
