@@ -997,7 +997,8 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
         _dg_counts, dg_raw, _dg_unknown = _format_counts_from_discogs(dg)
         media_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
         mb_media_display = "; ".join(mb_raw)
-        dg_media_display = "; ".join(dg_raw)        media_details = "MusicBrainz has no usable medium format; comparison skipped."
+        dg_media_display = "; ".join(dg_raw)
+        media_details = "MusicBrainz has no usable medium format; comparison skipped."
     result["mb_media_formats"] = mb_media_display
     result["discogs_api_formats"] = dg_media_display
     result["media_format_check"] = media_mode
