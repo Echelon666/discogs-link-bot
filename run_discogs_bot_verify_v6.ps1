@@ -1,6 +1,6 @@
 param(
     [int]$Limit = 20,
-    [string]$InputFile = 'discogs_bot_preflight_output\stage1_unique_release_candidates.tsv'
+    [string]$InputFile = 'discogs_barcode_builder_v6_output\stage1_v6_candidates.tsv'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +36,7 @@ try {
     } else {
         Write-Host 'V6 verification: all rows from the selected input. Read-only; no MusicBrainz edits will be submitted.'
     }
-    Write-Host 'V6 checks artist, title, barcode, medium format/count, release year, country, label and catalog number.'
+    Write-Host 'V6 checks artist, title, barcode, label and catalog number. Medium/year/country are compared only when MusicBrainz supplies usable values.'
     Write-Host "Input file: $candidateFile"
     Write-Host "Report folder: $outputDir"
     Write-Host "Dedicated v6 cache folder: $cacheDir"

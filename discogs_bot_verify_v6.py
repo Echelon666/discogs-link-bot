@@ -17,7 +17,7 @@ Run a small pilot first:
 Then, after reviewing report and confirming API access:
   py .\discogs_bot_verify_v6.py .\discogs_bot_preflight_output\stage1_unique_release_candidates.tsv --out-dir .\discogs_bot_verify_output_v6 --cache-dir .\discogs_bot_verify_output_v6\cache
 
-No fuzzy matching is used. v6 retains all v5 conservative normalizations and additionally requires a match for medium format, release year, and release country: typography variants for text, punctuation-only equivalence for titles while preserving every letter, digit, accent, apostrophe and word order, whitespace/dash-glyph normalization for catalog numbers, and a final “Records” label suffix variant only when the same catalog number also matches on the same label entry. All metadata checks are evaluated before selecting the final status. Barcode comparison is exact except for standard UPC-A/EAN-13 equivalence. Network/API failures are fail-closed.
+No fuzzy matching is used. v6 retains all v5 conservative normalizations and checks medium format, release year, and release country when MusicBrainz supplies usable data for those fields. A field absent from MusicBrainz is explicitly marked NOT_PRESENT_IN_MUSICBRAINZ and skipped; if MusicBrainz supplies it, the Discogs value must still be present and match. All metadata checks are evaluated before selecting the final status. Barcode comparison is exact except for standard UPC-A/EAN-13 equivalence. Network/API failures are fail-closed.
 """
 
 from __future__ import annotations
@@ -981,39 +981,77 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
             if not exact:
                 actions.append("UPC_A_EAN_13_EQUIVALENCE_DISCOGS_BARCODE")
 
-    # Release identity checks added in v6: actual carrier/medium, release year,
-    # and release country. Missing or unmappable values are never auto-approved.
-    media_mode, mb_media_display, dg_media_display, media_details = compare_media_formats(mb, dg)
+    # Release identity checks: compare only fields for which MusicBrainz has usable
+    # data. A missing MusicBrainz value is not a mismatch and is not required.
+    # However, when MusicBrainz supplies a field, missing or uncertain Discogs
+    # data still routes the candidate to MANUAL.
+    mb_media = mb.get("media")
+    mb_has_medium = (
+        isinstance(mb_media, list)
+        and any(isinstance(item, dict) and str(item.get("format") or "").strip() for item in mb_media)
+    )
+    if mb_has_medium:
+        media_mode, mb_media_display, dg_media_display, media_details = compare_media_formats(mb, dg)
+    else:
+        _mb_counts, mb_raw, _mb_unknown = _format_counts_from_musicbrainz(mb)
+        _dg_counts, dg_raw, _dg_unknown = _format_counts_from_discogs(dg)
+        media_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_media_display = "; ".join(mb_raw)
+        dg_media_display = "; ".join(dg_raw)        media_details = "MusicBrainz has no usable medium format; comparison skipped."
     result["mb_media_formats"] = mb_media_display
     result["discogs_api_formats"] = dg_media_display
     result["media_format_check"] = media_mode
     result["media_format_details"] = media_details
     if media_mode == "MISSING":
-        findings.append(("MANUAL_MEDIA_FORMAT_MISSING", "MEDIUM_FORMAT_MISSING_IN_MUSICBRAINZ_OR_DISCOGS"))
+        findings.append(("MANUAL_MEDIA_FORMAT_MISSING", "MUSICBRAINZ_HAS_MEDIUM_BUT_DISCOGS_FORMAT_IS_MISSING"))
     elif media_mode == "UNMAPPABLE":
         findings.append(("MANUAL_MEDIA_FORMAT_UNMAPPABLE", "ONE_OR_MORE_MEDIUM_FORMATS_CANNOT_BE_SAFELY_NORMALIZED"))
     elif media_mode == "MISMATCH":
         findings.append(("MANUAL_MEDIA_FORMAT_MISMATCH", "MUSICBRAINZ_AND_DISCOGS_MEDIUM_FORMATS_OR_COUNTS_DIFFER"))
 
-    year_mode, mb_year, dg_year, year_details = compare_release_years(mb, dg)
+    mb_year_value, mb_year_issue = extract_musicbrainz_year(mb)
+    mb_raw_date = str(mb.get("date") or "").strip()
+    mb_event_dates = mb.get("release-events")
+    has_raw_mb_event_date = isinstance(mb_event_dates, list) and any(
+        isinstance(event, dict) and str(event.get("date") or "").strip()
+        for event in mb_event_dates
+    )
+    mb_has_year_data = mb_year_value is not None or bool(mb_year_issue) or bool(mb_raw_date) or has_raw_mb_event_date
+    if not mb_has_year_data:
+        dg_year_value, _dg_year_issue = extract_discogs_year(dg)
+        year_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_year = ""
+        dg_year = str(dg_year_value or "")
+        year_details = "MusicBrainz has no usable release year; comparison skipped."
+    else:
+        year_mode, mb_year, dg_year, year_details = compare_release_years(mb, dg)
     result["mb_release_year"] = mb_year
     result["discogs_api_year"] = dg_year
     result["year_check"] = year_mode
     result["year_details"] = year_details
     if year_mode == "MISSING":
-        findings.append(("MANUAL_YEAR_MISSING", "RELEASE_YEAR_MISSING_IN_MUSICBRAINZ_OR_DISCOGS"))
+        findings.append(("MANUAL_YEAR_MISSING", "MUSICBRAINZ_HAS_YEAR_BUT_DISCOGS_YEAR_IS_MISSING"))
     elif year_mode == "AMBIGUOUS":
         findings.append(("MANUAL_YEAR_AMBIGUOUS", "RELEASE_YEAR_SOURCE_CONFLICT_OR_MULTIPLE_YEARS"))
     elif year_mode == "MISMATCH":
         findings.append(("MANUAL_YEAR_MISMATCH", "MUSICBRAINZ_AND_DISCOGS_RELEASE_YEARS_DIFFER"))
 
-    country_mode, mb_country, dg_country, country_details = compare_release_countries(mb, dg)
+    mb_country_codes, mb_country_issue = _mb_country_codes(mb)
+    mb_raw_country = str(mb.get("country") or "").strip()
+    mb_has_country_data = bool(mb_country_codes) or bool(mb_country_issue) or bool(mb_raw_country)
+    if not mb_has_country_data:
+        country_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_country = ""
+        dg_country = str(dg.get("country") or "").strip()
+        country_details = "MusicBrainz has no usable release country; comparison skipped."
+    else:
+        country_mode, mb_country, dg_country, country_details = compare_release_countries(mb, dg)
     result["mb_release_country"] = mb_country
     result["discogs_api_country"] = dg_country
     result["country_check"] = country_mode
     result["country_details"] = country_details
     if country_mode == "MISSING":
-        findings.append(("MANUAL_COUNTRY_MISSING", "RELEASE_COUNTRY_MISSING_IN_MUSICBRAINZ_OR_DISCOGS"))
+        findings.append(("MANUAL_COUNTRY_MISSING", "MUSICBRAINZ_HAS_COUNTRY_BUT_DISCOGS_COUNTRY_IS_MISSING"))
     elif country_mode == "AMBIGUOUS":
         findings.append(("MANUAL_COUNTRY_AMBIGUOUS", "MUSICBRAINZ_RELEASE_COUNTRY_IS_AMBIGUOUS"))
     elif country_mode == "UNMAPPABLE":
@@ -1162,7 +1200,17 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
         status, reason = findings[0]
     else:
         status = "AUTO_CANDIDATE"
-        passed = ["ARTIST_MATCH", "TITLE_MATCH", "BARCODE_MATCH", "MEDIA_FORMAT_MATCH", "YEAR_MATCH", "COUNTRY_MATCH", "NO_EXISTING_DISCOGS_LINK", "NOT_BLACKLISTED"]
+        passed = ["ARTIST_MATCH", "TITLE_MATCH", "BARCODE_MATCH", "NO_EXISTING_DISCOGS_LINK", "NOT_BLACKLISTED"]
+        for field_name, label in (
+            ("media_format_check", "MEDIA_FORMAT"),
+            ("year_check", "YEAR"),
+            ("country_check", "COUNTRY"),
+        ):
+            check_value = result[field_name]
+            if check_value == "MATCH":
+                passed.append(label + "_MATCH")
+            elif check_value == "NOT_PRESENT_IN_MUSICBRAINZ":
+                passed.append(label + "_NOT_PRESENT_IN_MUSICBRAINZ")
         if result["label_check"].startswith("MATCH"):
             passed.append("LABEL_CHECK_" + result["label_check"])
         if result["catalog_number_check"].startswith("MATCH"):
@@ -1288,7 +1336,7 @@ def main() -> int:
         f.write(f"Input: {source}\nRows processed: {len(results)}\nBlacklist MBIDs: {len(blacklist)}\n")
         for status, count in sorted(counts.items()):
             f.write(f"{status}: {count}\n")
-        f.write("\nAUTO_CANDIDATE means eligible for a separate review/approval stage only. v6 evaluates artist, title, barcode, medium formats (including quantities), release year, release country, labels, catalog numbers, existing links, and blacklist before status assignment. Missing, ambiguous, or unmappable medium/year/country data is routed to MANUAL; only explicit matches can pass. v5 conservative normalization rules are retained.\n")
+        f.write("\nAUTO_CANDIDATE means eligible for a separate review/approval stage only. v6 evaluates artist, title, barcode, medium formats (including quantities), release year, release country, labels, catalog numbers, existing links, and blacklist before status assignment. Medium/year/country are compared only when MusicBrainz supplies usable data; missing MusicBrainz fields are marked NOT_PRESENT_IN_MUSICBRAINZ and skipped. If MusicBrainz supplies a field but Discogs is missing, ambiguous, or unmappable, the candidate is MANUAL. v5 conservative normalization rules are retained.\n")
         f.write("No MusicBrainz edits were submitted by this program.\n")
         if fatal_error:
             f.write("FATAL: run stopped because Discogs authorization was denied.\n")
