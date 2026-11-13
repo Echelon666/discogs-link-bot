@@ -997,7 +997,8 @@ def main() -> int:
                 identity_after = sum(
                     int((item.get("identity_filter") or {}).get("candidates_after") or 0)
                     for item in progress.values()
-                )                print(
+                )
+                print(
                     f"[{processed_this_run:,}/{len(remaining):,}] searched={counts['SEARCHED_SINGLE'] + counts['SEARCHED_MULTIPLE']:,} "
                     f"single={counts['SEARCHED_SINGLE']:,} multiple={counts['SEARCHED_MULTIPLE']:,} "
                     f"kept_candidates={identity_after:,} filtered_out={identity_removed:,} "
