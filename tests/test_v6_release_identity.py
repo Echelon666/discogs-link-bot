@@ -374,11 +374,12 @@ class FullEvaluationTests(unittest.TestCase):
         self.assertIn("MANUAL_YEAR_MISMATCH", result["all_findings"])
         self.assertIn("MANUAL_COUNTRY_MISMATCH", result["all_findings"])
 
-    def test_missing_v6_field_prevents_auto_candidate(self):
+    def test_missing_musicbrainz_medium_is_skipped(self):
         self.mb["media"] = []
         result = self.evaluate()
-        self.assertIn("MANUAL_MEDIA_FORMAT_MISSING", result["all_findings"])
-        self.assertNotEqual(result["status"], "AUTO_CANDIDATE")
+        self.assertEqual(result["media_format_check"], "NOT_PRESENT_IN_MUSICBRAINZ")
+        self.assertNotIn("MANUAL_MEDIA_FORMAT_MISSING", result["all_findings"])
+        self.assertEqual(result["status"], "AUTO_CANDIDATE")
 
     def test_already_linked_status_does_not_hide_v6_diagnostics(self):
         self.mb["relations"] = [{
