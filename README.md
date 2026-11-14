@@ -25,6 +25,26 @@ Do not treat any `AUTO_CANDIDATE` as guaranteed correct. Community-maintained me
 
 Uncached Discogs requests are spaced by at least 1.1 seconds. Transient HTTP failures use bounded retries. API and parsing failures fail closed and never become `AUTO_CANDIDATE`.
 
+## Additional Windows requirement — Docker Desktop (V6)
+
+To use the local MusicBrainz Web Service required by Stage 2, Windows users following the Docker-based setup need:
+
+- Docker Desktop installed and running.
+- A working MusicBrainz mirror deployed using the [MusicBrainz Docker project](https://github.com/metabrainz/musicbrainz-docker).
+- The MusicBrainz Web Service accessible at `http://localhost:5000`.
+
+Stage 2 retrieves MusicBrainz release data from this local mirror. It does not retrieve release data from the public MusicBrainz Web Service.
+
+**External Internet access is also required** for:
+- Discogs API requests (`https://api.discogs.com`).
+- Downloading the official MusicBrainz Discogs-link blacklist (`https://musicbrainz.org/doc/Bots/Blacklist/Discogs_Links`).
+
+The V6 preflight stage does not make network requests.
+
+Docker Desktop and the MusicBrainz mirror must be installed, configured, and started separately. The V6 scripts do not install or manage them.
+
+Docker Desktop is specific to the Windows Docker setup. Users who already have a compatible local MusicBrainz Web Service running by another method do not need to install Docker Desktop.
+
 ## Input format
 
 The Stage 1 input is a UTF-8 TSV file with a header and columns including `mbid`, `barcode`, `discogs_url`, and `discogs_release_id`. The verifier also accepts a reviewed candidate TSV exported from a previous Stage 2 report, provided those columns are present. The exact selected input file is processed; v6 does not silently choose a new candidate set.
