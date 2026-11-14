@@ -35,6 +35,27 @@ Medium, year, and country are compared only when MusicBrainz supplies usable inf
 
 The scripts use the MusicBrainz Web Service, not PostgreSQL or psql. Uncached Discogs requests are separated by at least 1.1 seconds. Transient API failures use bounded retries and failures do not become positive matches.
 
+## Additional Windows requirement — Docker Desktop (V7)
+
+To run the V7 pipeline, Windows users following the Docker-based setup need:
+
+- Docker Desktop installed and running.
+- A working MusicBrainz mirror deployed using the [MusicBrainz Docker project](https://github.com/metabrainz/musicbrainz-docker).
+- The MusicBrainz Web Service accessible at `http://localhost:5000`.
+
+Both Stage 1 and Stage 2 retrieve MusicBrainz release data from this local mirror. They do not retrieve release data from the public MusicBrainz Web Service.
+
+**External Internet access is also required** for:
+- Stage 1: Discogs barcode searches and Master Versions requests.
+- Stage 2: Discogs release verification requests.
+- Stage 2: Downloading the official MusicBrainz Discogs-link blacklist (`https://musicbrainz.org/doc/Bots/Blacklist/Discogs_Links`).
+
+The local MusicBrainz mirror must be running and responding before starting the pipeline.
+
+Docker Desktop and the MusicBrainz mirror must be installed, configured, and started separately. The V7 scripts do not install or manage them.
+
+Docker Desktop is specific to the Windows Docker setup. Users who already have a compatible local MusicBrainz Web Service running by another method do not need to install Docker Desktop.
+
 ## Run
 
 Place report.txt next to the scripts and make sure the local MusicBrainz Web Service is available.
