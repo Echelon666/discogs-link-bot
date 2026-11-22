@@ -10,6 +10,7 @@ This development branch builds on the Stage 2 v6 release-identity verifier. It a
 
 - Reads unique release MBIDs from -> ALBUM rows inside POSSIBILITIES sections of the supplied report.
 - Retrieves MusicBrainz release data from the local MusicBrainz Web Service (default: http://localhost:5000).
+- Skips any release containing a `Digital Media` medium immediately after the MusicBrainz lookup, before Discogs relationship checks, barcode handling, or any Discogs API request. The run summary reports `SKIP_DIGITAL_MEDIA`.
 - Searches Discogs by barcode and follows every barcode-search pagination page.
 - When the search returns exactly one release, retains that release without expanding its master.
 - When the search returns multiple releases, retains every direct result and expands every distinct associated Master through all pages of /masters/{master_id}/versions — the API equivalent of View all versions.
@@ -25,7 +26,7 @@ It removes a candidate only when the Discogs search/version summary proves a def
 
 The verifier fetches the complete Discogs release and preserves the v6 checks for artist, title, barcode, medium format and physical quantities, release year, country/territory, label, catalog number, existing Discogs relationships, and the official blacklist.
 
-Medium, year, and country are compared only when MusicBrainz supplies usable information for the corresponding field. If MusicBrainz has no information for a field, that field is marked NOT_PRESENT_IN_MUSICBRAINZ and skipped. If MusicBrainz does supply it, missing, ambiguous, unmappable, or conflicting Discogs information remains a manual-review outcome.
+Medium, year, and country are compared only when MusicBrainz supplies usable information for the corresponding field. If MusicBrainz has no information for a field, that field is marked NOT_PRESENT_IN_MUSICBRAINZ and skipped. If MusicBrainz does supply it, missing, ambiguous, unmappable, or conflicting Discogs information remains a manual-review outcome. The verifier also applies a defense-in-depth `Digital Media` skip immediately after fetching MusicBrainz metadata and before calling the Discogs release endpoint; these rows are recorded as `SKIP_DIGITAL_MEDIA`.
 
 ## Requirements
 
@@ -65,6 +66,8 @@ Run a 10,000-MBID Stage 1 pilot from a clean progress file:
     py .\discogs_barcode_builder.py .\report.txt --limit 10000 --reset
 
 The API cache is preserved by --reset; only progress/output are reset. To resume or continue with all remaining MBIDs from the same report, rerun without --reset and without a limit:
+
+The builder resumes completed MBIDs from its progress file. After adding or changing the `Digital Media` filter, use `--reset` or a new `--progress` path so previously completed MBIDs are checked again; otherwise their saved results are reused.
 
     py .\discogs_barcode_builder.py .\report.txt
 
