@@ -7,6 +7,7 @@ A conservative, auditable toolset for checking whether a proposed Discogs releas
 ## What it does
 
 - **Stage 1 — input preflight:** validates a four-column TSV input, checks MBID and Discogs release URL formats, detects duplicate MBIDs and Discogs-release-ID collisions, and writes review reports. No network requests are made.
+- **Stage 1 v6 — barcode candidate builder:** reads the `-> ALBUM` candidates from `report.txt`, fetches the corresponding MusicBrainz releases, and searches Discogs by barcode. It skips releases with any `Digital Media` medium before any Discogs API request.
 - **Stage 2 v6 — release verification:** compares one MusicBrainz Release with the specific Discogs Release URL supplied in the Stage 1 candidate file.
 - **Metadata checks:** artist credit, title, barcode, existing Discogs relationships, official MusicBrainz Discogs-release blacklist, label, and catalog number.
 - **Release-identity checks (new in v6):** medium carrier/physical quantity, specific release year, and specific release country/area.
@@ -61,6 +62,17 @@ py .\discogs_bot_preflight.py .\your_input_file.txt
 
 By default, reports are written to `discogs_bot_preflight_output\`.
 
+## Run Stage 1 v6 — barcode candidate builder
+
+The barcode builder reads unique MBIDs from `-> ALBUM` rows inside the `POSSIBILITIES` sections of the supplied Album Hunter report. It fetches each release from the local MusicBrainz Web Service, then searches Discogs by barcode and writes a candidate TSV for Stage 2 v6.
+
+```powershell
+py .\discogs_barcode_builder.py .\report.txt --limit 100
+```
+
+Use `--limit 0` (or omit `--limit`) to process all MBIDs. The builder prompts for the Discogs token using hidden input unless `DISCOGS_TOKEN` is already set in the environment. Any MusicBrainz release containing a medium whose format is `Digital Media` is recorded as `SKIP_DIGITAL_MEDIA` before checking Discogs relationships or barcode and before sending a request to Discogs. This avoids spending Discogs API calls on digital releases.
+
+The builder saves progress and resumes completed MBIDs. To re-evaluate an existing run after changing the filter, use `--reset` or supply a new `--progress` path. The API cache is preserved by `--reset`; the MusicBrainz identity cache uses a separate namespace that includes the requested `media` data.
 ## Run Stage 2 v6 — recommended verifier
 
 Run a small pilot first:
@@ -98,7 +110,7 @@ This verifies all rows in that exact 100-row file, preserving its MBIDs and orde
 
 ### Medium format and quantity
 
-MusicBrainz medium `format` values are compared with Discogs release `formats[].name` and relevant subtype descriptions. Physical carrier quantities must agree. `Digital Media` ↔ `File` compares digital presence only: Discogs `File` quantity is a file/track count, not a physical-disc count, so it is deliberately ignored. Packaging/aggregate entries such as `Box Set` and `All Media` are reported but are not counted as additional carriers. CD carrier variants such as HDCD/SHM-CD and vinyl size variants normalize to their physical carrier. DVD-Audio and DVD-Video remain distinct; a generic DVD without a matching subtype description is manual/unmappable. Unknown formats and missing/invalid physical Discogs quantities go to manual review. Multi-disc physical counts must agree.
+MusicBrainz medium `format` values are compared with Discogs release `formats[].name` and relevant subtype descriptions. Physical carrier quantities must agree. The Stage 1 builder skips a MusicBrainz release with any `Digital Media` medium before querying Discogs; Stage 2 v6 repeats this exclusion before fetching the Discogs release details and reports `SKIP_DIGITAL_MEDIA`. For physical carriers, Discogs `File` is not treated as a physical medium. Packaging/aggregate entries such as `Box Set` and `All Media` are reported but are not counted as additional carriers. CD carrier variants such as HDCD/SHM-CD and vinyl size variants normalize to their physical carrier. DVD-Audio and DVD-Video remain distinct; a generic DVD without a matching subtype description is manual/unmappable. Unknown formats and missing/invalid physical Discogs quantities go to manual review. Multi-disc physical counts must agree.
 
 ### Release year
 
