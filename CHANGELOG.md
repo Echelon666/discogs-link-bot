@@ -1,3 +1,9 @@
+## Unreleased — early Digital Media exclusion
+
+- Add the Stage 1 barcode candidate builder, including an early skip for any MusicBrainz release with a `Digital Media` medium before Discogs relationship/barcode handling or any Discogs API request.
+- Add a Stage 2 v6 defense-in-depth skip before fetching Discogs release details; record these rows as `SKIP_DIGITAL_MEDIA` and show the count in progress output.
+- Add offline tests for both stage filters, including case/whitespace normalization and preservation of physical releases.
+- Document the resume/reset behavior required to re-evaluate MBIDs already completed by an earlier Stage 1 run.
 # Changelog
 
 ## v0.3.1 — refine medium and territory interpretation from pilot audit
