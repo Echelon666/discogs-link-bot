@@ -18,6 +18,9 @@ Co się zmieniło
    - nadal czyta MBID-y z sekcji POSSIBILITIES -> ALBUM w report.txt;
    - nadal pobiera dane MusicBrainz przez lokalny Web Service
      (domyślnie http://localhost:5000);
+- pomija każde wydanie zawierające medium `Digital Media` natychmiast po
+     pobraniu danych MusicBrainz — przed sprawdzaniem relacji Discogs, barcode
+     i przed jakimkolwiek zapytaniem do API Discogs; status: SKIP_DIGITAL_MEDIA;
    - wyszukuje Discogs po kodzie kreskowym i pobiera wszystkie strony wyników;
    - dokładnie jeden wynik: zachowuje ten jeden release bez rozwijania wersji;
    - więcej niż jeden wynik: zachowuje wszystkie wyniki wyszukiwania, a następnie
@@ -32,6 +35,8 @@ Co się zmieniło
 2. Stage 2: discogs_bot_verify_v6.py
    - zachowuje kontrole V6: medium, rok, kraj, artysta, tytuł, barcode,
      label, catalog number, istniejące relacje i blacklistę;
+- dodatkowo pomija `Digital Media` przed pobraniem szczegółów wydania z API Discogs
+     (status `SKIP_DIGITAL_MEDIA`), jako drugie zabezpieczenie;
    - medium/rok/kraj porównuje tylko wtedy, gdy MusicBrainz ma dla danego pola
      użyteczną informację;
    - brak informacji w MB oznacza NOT_PRESENT_IN_MUSICBRAINZ i pominięcie
@@ -67,6 +72,8 @@ C. Dalsze przetwarzanie Stage 1:
 
    Limit 0 oznacza wszystkie MBID-y. Program wznowi pracę z pliku postępu.
    Cache API jest zachowywany. Aby świadomie rozpocząć od nowa, użyj --reset.
+   Po dodaniu lub zmianie filtra Digital Media użyj --reset albo nowego pliku
+   --progress, aby ponownie sprawdzić również MBID-y zapisane we wcześniejszym postępie.
 
 D. Pełna weryfikacja Stage 2:
    .\run_discogs_bot_verify_v6.ps1 -Limit 0

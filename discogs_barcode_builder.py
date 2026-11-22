@@ -243,6 +243,20 @@ def has_discogs_relation(release: dict[str, Any]) -> bool:
     return False
 
 
+def has_digital_media_format(release: dict[str, Any]) -> bool:
+    """Return True when any MusicBrainz medium is explicitly Digital Media."""
+    media = release.get("media")
+    if not isinstance(media, list):
+        return False
+    for medium in media:
+        if not isinstance(medium, dict):
+            continue
+        media_format = " ".join(str(medium.get("format") or "").split()).casefold()
+        if media_format == "digital media":
+            return True
+    return False
+
+
 def fetch_mb_release(
     mbid: str,
     base_url: str,
@@ -907,7 +921,14 @@ def main() -> int:
                     returned_mbid = str(mb.get("id") or "").strip().lower()
                     if returned_mbid and returned_mbid != mbid:
                         raise RuntimeError(f"MusicBrainz returned MBID {returned_mbid} for requested {mbid}")
-                    if has_discogs_relation(mb) and not args.include_already_linked:
+                    if has_digital_media_format(mb):
+                        group.update(
+                            status="SKIP_DIGITAL_MEDIA",
+                            reason="MUSICBRAINZ_RELEASE_HAS_DIGITAL_MEDIA_MEDIUM",
+                            mb_title=str(mb.get("title") or ""),
+                            mb_artist=mb_artist_credit(mb),
+                        )
+                    elif has_discogs_relation(mb) and not args.include_already_linked:
                         group.update(status="SKIP_ALREADY_LINKED", reason="EXISTING_DISCOGS_RELATION")
                     else:
                         barcode = normalize_barcode(mb.get("barcode"))
@@ -1002,6 +1023,7 @@ def main() -> int:
                     f"[{processed_this_run:,}/{len(remaining):,}] searched={counts['SEARCHED_SINGLE'] + counts['SEARCHED_MULTIPLE']:,} "
                     f"single={counts['SEARCHED_SINGLE']:,} multiple={counts['SEARCHED_MULTIPLE']:,} "
                     f"kept_candidates={identity_after:,} filtered_out={identity_removed:,} "
+                    f"digital_media={counts['SKIP_DIGITAL_MEDIA']:,} "
                     f"already_linked={counts['SKIP_ALREADY_LINKED']:,} no_barcode={counts['SKIP_NO_BARCODE']:,} "
                     f"no_identity_match={counts['SKIP_NO_IDENTITY_MATCH']:,} "
                     f"errors={counts['ERROR']:,} | {speed:.2f} MBID/s | ETA {eta / 60:.1f} min",
@@ -1021,6 +1043,7 @@ def main() -> int:
     print(f"Completed MBIDs: {sum(1 for item in progress.values() if item.get('status') != 'ERROR'):,}")
     print(f"Single search results: {counts['SEARCHED_SINGLE']:,}")
     print(f"Multiple search results (expanded): {counts['SEARCHED_MULTIPLE']:,}")
+    print(f"Digital Media releases skipped before Discogs search: {counts['SKIP_DIGITAL_MEDIA']:,}")
     print(f"Candidate TSV for Stage 2 v6: {tsv_path}")
     print(f"Detailed JSON: {json_path}")
     print(f"Summary: {summary_path}")

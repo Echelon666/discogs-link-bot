@@ -22,3 +22,9 @@ The V6 verifier retains its full metadata and safety checks. The local V7 pipeli
 - Do not interpret AUTO_CANDIDATE as independently proven correctness.
 - Report ambiguous candidates separately; do not choose one arbitrarily.
 - Local collection reports, progress, caches, and generated result files must remain outside Git.
+
+## Early Digital Media exclusion
+- Stage 1 checks the MusicBrainz media list immediately after the release lookup. If any medium format is `Digital Media` (case- and whitespace-insensitive), the MBID is recorded as `SKIP_DIGITAL_MEDIA` and no Discogs relationship check, barcode processing, or Discogs API request is performed.
+- Stage 2 repeats the check immediately after the MusicBrainz release lookup and before fetching `/releases/{release_id}` from Discogs.
+- The guard is specific to `Digital Media`; physical carriers such as CD, Vinyl, DVD, Blu-ray, and Cassette remain eligible for the normal pipeline.
+- To re-evaluate MBIDs already stored as completed in a Stage 1 progress file, start with `--reset` or use a new `--progress` path. The API cache remains available.

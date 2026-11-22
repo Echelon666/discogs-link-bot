@@ -1,3 +1,9 @@
+## Unreleased — early Digital Media exclusion (V7)
+
+- Skip MusicBrainz releases containing any `Digital Media` medium in the Stage 1 builder before Discogs relationship checks, barcode handling, or Discogs API requests.
+- Add the same defense-in-depth exclusion to Stage 2 V6 verification before retrieving Discogs release details; report `SKIP_DIGITAL_MEDIA` in progress output.
+- Add offline tests for case/whitespace normalization, physical formats, and missing or malformed media.
+- Document that existing Stage 1 progress must be reset or replaced to re-evaluate MBIDs already marked complete.
 # Changelog
 
 ## v0.3.1 — refine medium and territory interpretation from pilot audit
