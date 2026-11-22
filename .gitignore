@@ -17,3 +17,11 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# DiscogsBot V7 local input, cache, progress and generated reports
+/report.txt
+/discogs_barcode_builder_v6_output/
+/discogs_barcode_builder_v6_cache/
+/discogs_barcode_builder_v6_progress.jsonl
+/discogs_barcode_builder_v6_progress.jsonl.state.json
+/discogs_bot_verify_output_v6/
