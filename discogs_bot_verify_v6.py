@@ -828,6 +828,20 @@ def fetch_mb_release(mbid: str, base_url: str, cache: JsonCache) -> dict[str, An
     return release
 
 
+def has_digital_media_format(release: dict[str, Any]) -> bool:
+    """Return True when any MusicBrainz medium is explicitly Digital Media."""
+    media = release.get("media")
+    if not isinstance(media, list):
+        return False
+    for medium in media:
+        if not isinstance(medium, dict):
+            continue
+        media_format = " ".join(str(medium.get("format") or "").split()).casefold()
+        if media_format == "digital media":
+            return True
+    return False
+
+
 def fetch_discogs_release(release_id: str, token: str, user_agent: str, delay: float,
                           cache: JsonCache, last_request: list[float]) -> dict[str, Any]:
     cached = cache.get(release_id)
@@ -1251,15 +1265,29 @@ def main() -> int:
                 else:
                     raise
             else:
-                try:
-                    dg = fetch_discogs_release(release_id, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request)
-                except HTTPStatusError as exc:
-                    if exc.status == 404:
-                        result = {**row, "status": "REJECT_DISCOGS_NOT_FOUND", "reason": "DISCOGS_API_RETURNED_404", "mb_title": str(mb.get("title") or ""), "mb_artist": mb_artist_credit(mb), "mb_barcode": norm_barcode(mb.get("barcode")), "discogs_api_title": "", "discogs_api_artist": "", "discogs_api_barcodes": "", "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb))}
-                    else:
-                        raise
+                if has_digital_media_format(mb):
+                    result = {
+                        **row,
+                        "status": "SKIP_DIGITAL_MEDIA",
+                        "reason": "MUSICBRAINZ_RELEASE_HAS_DIGITAL_MEDIA_MEDIUM",
+                        "mb_title": str(mb.get("title") or ""),
+                        "mb_artist": mb_artist_credit(mb),
+                        "mb_barcode": norm_barcode(mb.get("barcode")),
+                        "discogs_api_title": "",
+                        "discogs_api_artist": "",
+                        "discogs_api_barcodes": "",
+                        "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb)),
+                    }
                 else:
-                    result = evaluate(row, mb, dg, blacklist)
+                    try:
+                        dg = fetch_discogs_release(release_id, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request)
+                    except HTTPStatusError as exc:
+                        if exc.status == 404:
+                            result = {**row, "status": "REJECT_DISCOGS_NOT_FOUND", "reason": "DISCOGS_API_RETURNED_404", "mb_title": str(mb.get("title") or ""), "mb_artist": mb_artist_credit(mb), "mb_barcode": norm_barcode(mb.get("barcode")), "discogs_api_title": "", "discogs_api_artist": "", "discogs_api_barcodes": "", "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb))}
+                        else:
+                            raise
+                    else:
+                        result = evaluate(row, mb, dg, blacklist)
         except Exception as exc:
             message = str(exc).replace("\t", " ").replace("\n", " ")[:500]
             # A bad token should stop the run immediately, not repeatedly hit the API.
@@ -1276,6 +1304,7 @@ def main() -> int:
                   f"MANUAL={sum(v for k,v in counts.items() if k.startswith('MANUAL_'))} "
                   f"REJECT={sum(v for k,v in counts.items() if k.startswith('REJECT_'))} "
                   f"BLOCKED={counts['BLOCKED_BLACKLIST']} ALREADY_LINKED={counts['ALREADY_LINKED']} "
+                  f"DIGITAL_MEDIA={counts['SKIP_DIGITAL_MEDIA']} "
                   f"ERROR={sum(v for k,v in counts.items() if k.startswith('ERROR_'))}", flush=True)
         if fatal_error:
             break
