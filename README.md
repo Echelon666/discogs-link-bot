@@ -1,4 +1,4 @@
-# Discogs Link Bot — V8.1
+# Discogs Link Bot — V8.2
 
 A complete, read-only two-phase workflow for finding and verifying Discogs releases for MusicBrainz releases. It is designed to run from a new, empty working folder and does not require any V8 progress, cache, output or helper files.
 
@@ -9,7 +9,7 @@ A complete, read-only two-phase workflow for finding and verifying Discogs relea
 Place these three files in one new folder:
 
 - `discogs_barcode_builder.py` — Phase 1, MusicBrainz-only snapshot builder.
-- `discogs_bot_verify.py` — Phase 2, Discogs barcode search and full V6 verification.
+- `discogs_bot_verify.py` — Phase 2, Discogs primary-artist guard, barcode search and full V6 verification.
 - `README.md` — these instructions.
 
 No other Python modules or third-party packages are required. Python 3.10 or newer is supported.
@@ -63,7 +63,9 @@ For each MBID, Phase 2 performs one Discogs barcode search and checks the API's 
 
 The limit is based on `pagination.items` from Discogs, not the number of rows visible on the first page. Exactly 100 results are allowed.
 
-**Master-version expansion is disabled.** Phase 2 does not fetch linked master versions. This prevents a small barcode search from ballooning into thousands of unrelated pressings. Every accepted direct result receives the full V6 verification: artist, title, barcode, medium type and quantity, year, country, label, catalog number, existing MusicBrainz Discogs links and the official MusicBrainz Discogs-link blacklist. No preliminary identity prefilter is applied.
+**V8.2 Artist Guard runs before full V6 verification.** For an MBID with 1–100 direct barcode results, Phase 2 checks the release-level primary Artist IDs from the Discogs release details. V6 verification starts only when the candidates have exactly one distinct, verifiable primary Artist ID in common. If multiple distinct primary Artist IDs are found, the MBID is skipped as `SKIPPED_MULTIPLE_ARTISTS`. If any candidate's primary-artist identity is missing, malformed or otherwise unverifiable, the MBID fails closed as `SKIPPED_ARTIST_UNVERIFIABLE`. In either case, V6 verification is not started for that MBID.
+
+**Master-version expansion is disabled.** Phase 2 does not fetch linked master versions. This prevents a small barcode search from ballooning into thousands of unrelated pressings. Only MBIDs that pass the Artist Guard proceed to the full V6 verification: artist, title, barcode, medium type and quantity, year, country, label, catalog number, existing MusicBrainz Discogs links and the official MusicBrainz Discogs-link blacklist.
 
 The default minimum interval between Discogs API request starts is 1.1 seconds. A skipped MBID requires only its initial barcode-search request; no release-detail requests are sent for it.
 
@@ -92,9 +94,9 @@ Phase 1 progress and cache:
 
 ### Phase 2
 
-Folder: `discogs_bot_verify_v8_1_output\`
+Folder: `discogs_bot_verify_v8_2_output\`
 
-- `stage2_verification_report.tsv` — candidate-by-candidate V6 results plus explicit rows for MBIDs skipped due to more than 100 barcode hits.
+- `stage2_verification_report.tsv` — candidate-by-candidate V6 results plus explicit audit rows for MBIDs skipped by the 100-result limit or Artist Guard.
 - `stage2_summary.txt` — counts of completed, skipped and candidate statuses.
 - `results.txt` — one tab-separated `MBID<TAB>Discogs URL` pair when exactly one direct candidate for that MBID has the final `AUTO_CANDIDATE` status.
 
@@ -102,8 +104,8 @@ If two or more candidates for one MBID have `AUTO_CANDIDATE`, no arbitrary winne
 
 Phase 2 progress and cache:
 
-- `discogs_bot_verify_v8_1_progress.jsonl`
-- `discogs_bot_verify_v8_1_cache\discogs_api\`
+- `discogs_bot_verify_v8_2_progress.jsonl`
+- `discogs_bot_verify_v8_2_cache\discogs_api\`
 
 The progress JSONL is updated after each completed MBID group. The TSV, summary and `results.txt` are refreshed every 100 completed or skipped groups, on Ctrl+C and at normal completion.
 
@@ -125,5 +127,7 @@ Reset removes that phase's progress and state files but preserves its API cache.
 - Phase 1 is MusicBrainz-only. Phase 2 uses the complete snapshot from Phase 1 and does not query the MusicBrainz Web Service again.
 - Neither phase makes MusicBrainz edits.
 - More than 100 barcode hits are skipped rather than truncated, expanded or guessed.
-- All direct results below the limit receive the full V6 identity checks. No fuzzy matching, Master expansion or preliminary V7 identity filter is used.
+- Direct results below the limit pass through the V8.2 Artist Guard first; only a single, verifiable primary-artist identity proceeds to full V6 checks.
+- Multiple or unverifiable primary-artist identities are skipped before V6 (`SKIPPED_MULTIPLE_ARTISTS` / `SKIPPED_ARTIST_UNVERIFIABLE`).
+- No fuzzy matching or Master-version expansion is used.
 - Review `stage2_verification_report.tsv` before using any candidate outside this read-only workflow.
