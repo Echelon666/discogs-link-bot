@@ -1,100 +1,104 @@
-# Discogs Link Bot — V7 candidate pipeline (read-only)
+# Discogs Link Bot — V8
 
-This development branch builds on the Stage 2 v6 release-identity verifier. It adds a multi-result Discogs candidate builder and a conservative MusicBrainz identity prefilter. The work remains strictly read-only.
+A conservative, read-only two-phase pipeline for finding and verifying Discogs release candidates for MusicBrainz releases.
 
-**No MusicBrainz edits, votes, approvals, or relationship changes are submitted.** An AUTO_CANDIDATE is only a candidate that passed the implemented checks; it is not a guarantee that the exact pressing, matrix, plant, sleeve, or artwork is identical.
-
-## What V7 adds
-
-### Stage 1 — barcode search and candidate expansion
-
-- Reads unique release MBIDs from -> ALBUM rows inside POSSIBILITIES sections of the supplied report.
-- Retrieves MusicBrainz release data from the local MusicBrainz Web Service (default: http://localhost:5000).
-- Skips any release containing a `Digital Media` medium immediately after the MusicBrainz lookup, before Discogs relationship checks, barcode handling, or any Discogs API request. The run summary reports `SKIP_DIGITAL_MEDIA`.
-- Searches Discogs by barcode and follows every barcode-search pagination page.
-- When the search returns exactly one release, retains that release without expanding its master.
-- When the search returns multiple releases, retains every direct result and expands every distinct associated Master through all pages of /masters/{master_id}/versions — the API equivalent of View all versions.
-- Deduplicates Release IDs within each MBID.
-
-### Identity prefilter
-
-The builder uses MusicBrainz medium, year, and country only when MusicBrainz supplies a usable, unambiguous value for that field.
-
-It removes a candidate only when the Discogs search/version summary proves a definite contradiction. Missing, ambiguous, generic, or incomplete Discogs summary values are retained for full Stage 2 verification. The prefilter does not try to compare physical medium quantities because summary data is not sufficiently reliable for that check.
-
-### Stage 2 — V6 release verification
-
-The verifier fetches the complete Discogs release and preserves the v6 checks for artist, title, barcode, medium format and physical quantities, release year, country/territory, label, catalog number, existing Discogs relationships, and the official blacklist.
-
-Medium, year, and country are compared only when MusicBrainz supplies usable information for the corresponding field. If MusicBrainz has no information for a field, that field is marked NOT_PRESENT_IN_MUSICBRAINZ and skipped. If MusicBrainz does supply it, missing, ambiguous, unmappable, or conflicting Discogs information remains a manual-review outcome. The verifier also applies a defense-in-depth `Digital Media` skip immediately after fetching MusicBrainz metadata and before calling the Discogs release endpoint; these rows are recorded as `SKIP_DIGITAL_MEDIA`.
+**The scripts do not edit MusicBrainz.** They do not submit relationships, votes, approvals, or other changes. `AUTO_CANDIDATE` is a verification result, not an automatic MusicBrainz edit and not a guarantee that every physical detail of a pressing (for example, matrix, plant, sleeve, or artwork) is identical.
 
 ## Requirements
 
-- Python 3.10+ (standard library only)
-- A local MusicBrainz mirror exposing /ws/2, defaulting to http://localhost:5000
-- A Discogs personal API token; the builder and PowerShell wrapper prompt with hidden input if DISCOGS_TOKEN is not already set
+- Python 3.10 or newer (standard library only; no `pip` packages required).
+- A local MusicBrainz Web Service mirror for Phase 1. The default URL is `http://localhost:5000`.
+- Internet access to the Discogs API and the official MusicBrainz Discogs-link blacklist for Phase 2.
+- A Discogs personal API token for Phase 2. Set `DISCOGS_TOKEN` in the environment or enter it at the masked prompt. On Windows, the prompt displays `*` characters rather than the token.
 
-The scripts use the MusicBrainz Web Service, not PostgreSQL or psql. Uncached Discogs requests are separated by at least 1.1 seconds. Transient API failures use bounded retries and failures do not become positive matches.
+## Workflow
 
-## Additional Windows requirement — Docker Desktop (V7)
+Run both scripts from the same working folder. Put the Album Hunter report in that folder, named `report.txt`, or pass its path as the first argument.
 
-To run the V7 pipeline, Windows users following the Docker-based setup need:
+### Phase 1 — MusicBrainz snapshot only
 
-- Docker Desktop installed and running.
-- A working MusicBrainz mirror deployed using the [MusicBrainz Docker project](https://github.com/metabrainz/musicbrainz-docker).
-- The MusicBrainz Web Service accessible at `http://localhost:5000`.
+```powershell
+py .\discogs_barcode_builder.py .\report.txt
+```
 
-Both Stage 1 and Stage 2 retrieve MusicBrainz release data from this local mirror. They do not retrieve release data from the public MusicBrainz Web Service.
+The report parser extracts unique release MBIDs from `-> ALBUM:` rows inside `POSSIBILITIES` sections. Phase 1 queries only the local MusicBrainz Web Service; it does not use the Discogs API and does not need a Discogs token.
 
-**External Internet access is also required** for:
-- Stage 1: Discogs barcode searches and Master Versions requests.
-- Stage 2: Discogs release verification requests.
-- Stage 2: Downloading the official MusicBrainz Discogs-link blacklist (`https://musicbrainz.org/doc/Bots/Blacklist/Discogs_Links`).
+It filters releases with:
 
-The local MusicBrainz mirror must be running and responding before starting the pipeline.
+- a `Digital Media` medium;
+- an existing Discogs relationship (unless `--include-already-linked` is supplied);
+- a missing or invalid barcode.
 
-Docker Desktop and the MusicBrainz mirror must be installed, configured, and started separately. The V7 scripts do not install or manage them.
+Eligible releases are saved with their full MusicBrainz response in the JSONL snapshot used by Phase 2. The default concurrency is 16 workers, with no artificial per-worker delay (`--workers` and `--mb-delay` can be overridden).
 
-Docker Desktop is specific to the Windows Docker setup. Users who already have a compatible local MusicBrainz Web Service running by another method do not need to install Docker Desktop.
+Useful test run:
 
-## Run
+```powershell
+py .\discogs_barcode_builder.py .\report.txt --limit 50
+```
 
-Place report.txt next to the scripts and make sure the local MusicBrainz Web Service is available.
+### Phase 2 — Discogs search and V6 verification
 
-Run a 10,000-MBID Stage 1 pilot from a clean progress file:
+After Phase 1 has produced its JSONL snapshot, run:
 
-    py .\discogs_barcode_builder.py .\report.txt --limit 10000 --reset
+```powershell
+py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl
+```
 
-The API cache is preserved by --reset; only progress/output are reset. To resume or continue with all remaining MBIDs from the same report, rerun without --reset and without a limit:
+When `DISCOGS_TOKEN` is not set, the script asks for it interactively. Characters are masked with asterisks; the token is not printed in the console or written to the output reports.
 
-The builder resumes completed MBIDs from its progress file. After adding or changing the `Digital Media` filter, use `--reset` or a new `--progress` path so previously completed MBIDs are checked again; otherwise their saved results are reused.
+Phase 2:
 
-    py .\discogs_barcode_builder.py .\report.txt
+1. Loads the complete MusicBrainz release data from the Phase 1 snapshot. It does **not** query the MusicBrainz Web Service again.
+2. Fetches the official MusicBrainz Discogs-link blacklist.
+3. Searches Discogs by barcode and follows all search-result pages.
+4. If the barcode search returns multiple releases, expands every distinct linked Discogs master through all pages of its versions. A single direct search result is retained without master expansion.
+5. Applies the conservative V7 medium/year/country summary prefilter, removing only definite contradictions; incomplete or ambiguous summary metadata is retained.
+6. Runs the full V6 release-identity verification on the remaining Discogs releases.
 
-Run Stage 2 against the generated candidate TSV:
+The default minimum interval between Discogs API request starts is 1.1 seconds.
 
-    .\run_discogs_bot_verify_v6.ps1 -Limit 50
-    .\run_discogs_bot_verify_v6.ps1 -Limit 0
+Useful test run:
 
-The wrapper defaults to discogs_barcode_builder_v6_output\stage1_v6_candidates.tsv. Reports and the dedicated Stage 2 cache are written to discogs_bot_verify_output_v6\.
+```powershell
+py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl --limit 50
+```
 
 ## Output files
 
-- stage1_v6_candidates.tsv — one row per retained Discogs Release candidate; direct input for Stage 2
-- stage1_v6_candidates.json — detailed per-MBID search and expansion record
-- stage1_v6_summary.txt — counts before/after identity prefilter and search/expansion status
-- stage2_verification_report.tsv and stage2_summary.txt — detailed Stage 2 verification results
+### Phase 1
 
-Local inputs, caches, progress files, and generated reports are excluded from Git by .gitignore. Do not commit private collection reports, API tokens, or cache files.
+Folder: `discogs_barcode_builder_v8_output\`
 
-## Tests
+- `stage1_musicbrainz_v8.tsv` — compact list of eligible MBID/barcode pairs.
+- `stage1_musicbrainz_v8.jsonl` — full MusicBrainz snapshots consumed by Phase 2.
+- `stage1_musicbrainz_v8_summary.txt` — counts by Phase 1 status.
 
-Run offline tests:
+### Phase 2
 
-    py -m unittest discover -s .\tests -v
+Folder: `discogs_bot_verify_v8_output\`
 
-The tests cover barcode-search pagination, Master Versions pagination, one-result and multi-result behavior, deduplication, progress recovery, the Stage 1 to Stage 2 handoff, and optional medium/year/country checks.
+- `stage2_verification_report.tsv` — detailed candidate-by-candidate verification results.
+- `stage2_summary.txt` — summary counts and run metadata.
+- `results.txt` — one tab-separated `MBID<TAB>Discogs URL` pair per MBID when **exactly one** candidate for that MBID has the final `AUTO_CANDIDATE` status.
 
-## Status
+If more than one candidate for an MBID has `AUTO_CANDIDATE`, the script does not choose one arbitrarily: that MBID is omitted from `results.txt`, while all candidates remain visible in the detailed TSV report.
 
-This is a development branch for evaluation. The V6 branch remains the baseline, and main is not changed by this branch. Community feedback has shown that metadata agreement alone does not prove the exact physical pressing. Treat all outputs as read-only review material.
+The Phase 2 TSV, summary, and `results.txt` are created at startup and refreshed every 100 completed MBID groups by default. They are also written when the run is interrupted with `Ctrl+C` or finishes normally.
+
+## Resume and cache
+
+Both phases keep append-only progress JSONL files and matching state files in the working folder. API responses are cached separately:
+
+- Phase 1 progress: `discogs_barcode_builder_v8_progress.jsonl`; cache: `discogs_barcode_builder_v8_cache\musicbrainz_release\`.
+- Phase 2 progress: `discogs_bot_verify_v8_progress.jsonl`; cache: `discogs_bot_verify_v8_cache\discogs_api\`.
+
+After `Ctrl+C`, rerun the same command to resume. Completed MBID groups are skipped and cached API responses can be reused. Use `--reset` only when you intentionally want to clear that phase's progress and state; its API cache is preserved.
+
+## Safety and matching notes
+
+- Phase 1 is MusicBrainz-only; Phase 2 uses Discogs plus the embedded Phase 1 MusicBrainz data.
+- No PostgreSQL or `psql` access is required.
+- No MusicBrainz edits are submitted in either phase.
+- Matching is deliberately conservative. Missing or ambiguous Discogs summary fields are not treated as contradictions by the prefilter; the full verifier makes the final candidate classification.
+- Review `stage2_verification_report.tsv` before using any candidate outside this read-only workflow.
