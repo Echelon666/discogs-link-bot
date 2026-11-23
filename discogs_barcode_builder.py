@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Discogs Link Bot V8 — Phase 1: MusicBrainz-only snapshot builder.
+"""Discogs Link Bot V8.1 — Phase 1: MusicBrainz-only snapshot builder.
 
 Reads unique MBIDs from Album Hunter report.txt and talks ONLY to the local
 MusicBrainz Web Service. It does not import, prompt for, or contact Discogs.
 
 Eligible physical releases are written to:
-  stage1_musicbrainz_v8.tsv       compact, human-readable index
-  stage1_musicbrainz_v8.jsonl     full MusicBrainz snapshots for Phase 2
+  stage1_musicbrainz_v8_1.tsv       compact, human-readable index
+  stage1_musicbrainz_v8_1.jsonl     full MusicBrainz snapshots for Phase 2
 
 The append-only progress file permits safe resume. No PostgreSQL/psql and no
 MusicBrainz edits are used.
@@ -291,14 +291,14 @@ def write_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], report_pat
     out_dir.mkdir(parents=True, exist_ok=True)
     groups = sorted(progress.values(), key=lambda r: int(r.get("report_position") or 0))
     ready = [g for g in groups if g.get("status") == "READY_FOR_DISCOGS" and isinstance(g.get("mb_release"), dict)]
-    tsv_path = out_dir / "stage1_musicbrainz_v8.tsv"
+    tsv_path = out_dir / "stage1_musicbrainz_v8_1.tsv"
     fields = ["mbid", "barcode", "mb_artist", "mb_title", "report_position", "status", "reason"]
     with tsv_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t", lineterminator="\n")
         writer.writeheader()
         for g in ready:
             writer.writerow({k: g.get(k, "") for k in fields})
-    snapshot_path = out_dir / "stage1_musicbrainz_v8.jsonl"
+    snapshot_path = out_dir / "stage1_musicbrainz_v8_1.jsonl"
     temp = snapshot_path.with_suffix(".jsonl.tmp")
     with temp.open("w", encoding="utf-8", newline="\n") as f:
         for g in ready:
@@ -325,12 +325,12 @@ def resolve_path(value: str | Path, script_dir: Path) -> Path:
 
 def main() -> int:
     script_dir = Path(__file__).resolve().parent
-    parser = argparse.ArgumentParser(description="V8 Phase 1: read and filter MusicBrainz releases only; no Discogs API.")
+    parser = argparse.ArgumentParser(description="V8.1 Phase 1: read and filter MusicBrainz releases only; no Discogs API.")
     parser.add_argument("report", nargs="?", default="report.txt", help="Album Hunter report (default: report.txt beside this script)")
     parser.add_argument("--mb-base-url", default=os.environ.get("MUSICBRAINZ_BASE_URL", DEFAULT_MB_BASE_URL))
-    parser.add_argument("--out-dir", default="discogs_barcode_builder_v8_output")
-    parser.add_argument("--cache-dir", default="discogs_barcode_builder_v8_cache/musicbrainz_release")
-    parser.add_argument("--progress", default="discogs_barcode_builder_v8_progress.jsonl")
+    parser.add_argument("--out-dir", default="discogs_barcode_builder_v8_1_output")
+    parser.add_argument("--cache-dir", default="discogs_barcode_builder_v8_1_cache/musicbrainz_release")
+    parser.add_argument("--progress", default="discogs_barcode_builder_v8_1_progress.jsonl")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Concurrent local MusicBrainz requests (default: 16)")
     parser.add_argument("--mb-delay", type=float, default=DEFAULT_MB_DELAY, help="Minimum interval between MusicBrainz request starts per worker (default: 0.0s)")
     parser.add_argument("--batch-size", type=int, default=500, help="Number of pending MBIDs submitted per worker batch")
