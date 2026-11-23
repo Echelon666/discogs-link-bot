@@ -996,7 +996,8 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
         findings.append(("MANUAL_MB_BARCODE_MISSING", "MUSICBRAINZ_RELEASE_HAS_NO_BARCODE"))
         result["input_mb_barcode_check"] = "MUSICBRAINZ_BARCODE_MISSING"
     elif barcodes_equivalent(input_barcode, mb_barcode):
-        result["input_mb_barcode_check"] = "MATCH"        if input_barcode != mb_barcode:
+        result["input_mb_barcode_check"] = "MATCH"
+        if input_barcode != mb_barcode:
             actions.append("UPC_A_EAN_13_EQUIVALENCE_MB_BARCODE")
     else:
         reject_findings.append(("REJECT_MB_BARCODE_MISMATCH", "INPUT_BARCODE_DIFFERS_FROM_CURRENT_MUSICBRAINZ_BARCODE"))
