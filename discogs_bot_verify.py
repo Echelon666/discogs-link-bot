@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-r"""Discogs Link Bot — Stage 2 v5 normalization verification (read-only).
+r"""Discogs Link Bot V8 — Phase 2: Discogs discovery + full V6 verification.
 
-This script NEVER submits edits to MusicBrainz. It evaluates candidates from
-Stage 1 against the MusicBrainz Web Service on the user's local mirror and the
-Discogs API, then writes an auditable TSV report.
+Input is the JSONL snapshot produced by discogs_barcode_builder.py.
+Phase 2 searches Discogs by each MusicBrainz barcode, fetches every search
+page, expands all associated master versions when the initial search has
+multiple results, and then applies the unchanged V6 release identity checks.
+
+The full MusicBrainz release response is embedded in the Phase 1 snapshot;
+Phase 2 does NOT query the local MusicBrainz Web Service again.
+No edits are ever submitted to MusicBrainz.
 
 Requirements:
-- Python 3.10+
-- Local MusicBrainz mirror serving /ws/2 (default: http://localhost:5000)
-- A Discogs personal API token in environment variable DISCOGS_TOKEN
+- Python 3.10+ (standard library only)
+- Internet access to Discogs API and MusicBrainz blacklist page
+- Discogs personal API token: DISCOGS_TOKEN environment variable or masked prompt
 
-Run a small pilot first:
-  $env:DISCOGS_TOKEN = "..."  # don't paste the token into ChatGPT or source code
-  py .\discogs_bot_verify.py .\discogs_bot_preflight_output\stage1_unique_release_candidates.tsv --limit 20 --out-dir .\discogs_bot_verify_output --cache-dir .\discogs_bot_verify_output\cache
+Run a small pilot first (if DISCOGS_TOKEN is not set, the script prompts
+for it with masked input; typed/pasted characters are shown as asterisks):
+  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl --limit 20
 
-Then, after reviewing report and confirming API access:
-  py .\discogs_bot_verify.py .\discogs_bot_preflight_output\stage1_unique_release_candidates.tsv --out-dir .\discogs_bot_verify_output --cache-dir .\discogs_bot_verify_output\cache
+Then process the full Phase 1 snapshot:
+  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl
 
-No fuzzy matching is used. v5 applies explicit conservative normalizations: typography variants for text, punctuation-only equivalence for titles while preserving every letter, digit, accent, apostrophe and word order, whitespace/dash-glyph normalization for catalog numbers, and a final “Records” label suffix variant only when the same catalog number also matches on the same label entry. All metadata checks are evaluated before selecting the final status. Barcode comparison is exact except for standard UPC-A/EAN-13 equivalence. Network/API failures are fail-closed.
+No fuzzy matching is used. The original V6 conservative normalizations and
+metadata checks are retained: artist, title, barcode, medium format and count,
+release year, release country, labels, catalog numbers, existing links and the
+official Discogs-link blacklist. Missing/ambiguous Discogs summary fields are
+kept for complete V6 API verification. Network/API failures fail closed.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html.parser
+import hashlib
 import json
 import os
 import re
@@ -42,8 +52,46 @@ from typing import Any
 BLACKLIST_URL = "https://musicbrainz.org/doc/Bots/Blacklist/Discogs_Links"
 CACHE_MAX_AGE_SECONDS = 6 * 60 * 60
 DEFAULT_MB_BASE_URL = "http://localhost:5000"
-DEFAULT_DISCOGS_USER_AGENT = "DiscogsLinkBot/0.2 (+https://github.com/Echelon666/discogs-link-bot; read-only release verification)"
+DEFAULT_DISCOGS_USER_AGENT = "DiscogsLinkBot/0.3 (+https://github.com/Echelon666/discogs-link-bot; read-only release verification)"
 MBID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def prompt_masked_token() -> str:
+    """Read a Discogs token without echoing its characters to the console.
+
+    Windows consoles (including PowerShell 7) display one asterisk per
+    character. On other platforms getpass provides hidden input.
+    """
+    prompt = "Discogs API token (input hidden): "
+    if os.name == "nt":
+        import msvcrt
+
+        print(prompt, end="", flush=True)
+        chars: list[str] = []
+        while True:
+            char = msvcrt.getwch()
+            if char in ("\r", "\n"):
+                print(flush=True)
+                break
+            if char == "\003":  # Ctrl+C
+                print(flush=True)
+                raise KeyboardInterrupt
+            if char in ("\b", "\x7f"):
+                if chars:
+                    chars.pop()
+                    print("\b \b", end="", flush=True)
+                continue
+            if char in ("\x00", "\xe0"):
+                # Consume the second code unit for special keys (arrows, F-keys).
+                msvcrt.getwch()
+                continue
+            if char.isprintable():
+                chars.append(char)
+                print("*", end="", flush=True)
+        return "".join(chars).strip()
+
+    import getpass
+    return getpass.getpass(prompt).strip()
 
 
 class HTTPStatusError(RuntimeError):
@@ -219,6 +267,336 @@ def barcodes_equivalent(left: Any, right: Any) -> bool:
     return False
 
 
+
+# Country aliases are embedded (no third-party dependency required).
+# Unknown or compound Discogs regions fail closed.
+_COUNTRY_NAME_TO_ISO = json.loads(r'''{"afghanistan":"AF","albania":"AL","algeria":"DZ","american samoa":"AS","andorra":"AD","angola":"AO","anguilla":"AI","antarctica":"AQ","antigua and barbuda":"AG","arab republic of egypt":"EG","argentina":"AR","argentine republic":"AR","armenia":"AM","aruba":"AW","australia":"AU","austria":"AT","azerbaijan":"AZ","bahamas":"BS","bahrain":"BH","bangladesh":"BD","barbados":"BB","belarus":"BY","belgium":"BE","belize":"BZ","benin":"BJ","bermuda":"BM","bhutan":"BT","bolivarian republic of venezuela":"VE","bolivia":"BO","bolivia, plurinational state of":"BO","bonaire, sint eustatius and saba":"BQ","bosnia and herzegovina":"BA","botswana":"BW","bouvet island":"BV","brazil":"BR","britain":"GB","british indian ocean territory":"IO","british virgin islands":"VG","brunei":"BN","brunei darussalam":"BN","bulgaria":"BG","burkina faso":"BF","burundi":"BI","cabo verde":"CV","cambodia":"KH","cameroon":"CM","canada":"CA","cape verde":"CV","cayman islands":"KY","central african republic":"CF","chad":"TD","chile":"CL","china":"CN","christmas island":"CX","cocos (keeling) islands":"CC","colombia":"CO","commonwealth of dominica":"DM","commonwealth of the bahamas":"BS","commonwealth of the northern mariana islands":"MP","comoros":"KM","congo":"CG","congo, the democratic republic of the":"CD","cook islands":"CK","costa rica":"CR","croatia":"HR","cuba":"CU","curaçao":"CW","cyprus":"CY","czech republic":"CZ","czechia":"CZ","côte d'ivoire":"CI","democratic people's republic of korea":"KP","democratic republic of sao tome and principe":"ST","democratic republic of timor-leste":"TL","democratic socialist republic of sri lanka":"LK","denmark":"DK","djibouti":"DJ","dominica":"DM","dominican republic":"DO","eastern republic of uruguay":"UY","ecuador":"EC","egypt":"EG","el salvador":"SV","equatorial guinea":"GQ","eritrea":"ER","estonia":"EE","eswatini":"SZ","ethiopia":"ET","europe":"XE","falkland islands (malvinas)":"FK","faroe islands":"FO","federal democratic republic of ethiopia":"ET","federal democratic republic of nepal":"NP","federal republic of germany":"DE","federal republic of nigeria":"NG","federal republic of somalia":"SO","federated states of micronesia":"FM","federative republic of brazil":"BR","fiji":"FJ","finland":"FI","france":"FR","french guiana":"GF","french polynesia":"PF","french republic":"FR","french southern territories":"TF","gabon":"GA","gabonese republic":"GA","gambia":"GM","georgia":"GE","germany":"DE","ghana":"GH","gibraltar":"GI","grand duchy of luxembourg":"LU","great britain":"GB","greece":"GR","greenland":"GL","grenada":"GD","guadeloupe":"GP","guam":"GU","guatemala":"GT","guernsey":"GG","guinea":"GN","guinea-bissau":"GW","guyana":"GY","haiti":"HT","hashemite kingdom of jordan":"JO","heard island and mcdonald islands":"HM","hellenic republic":"GR","holy see (vatican city state)":"VA","honduras":"HN","hong kong":"HK","hong kong special administrative region of china":"HK","hungary":"HU","iceland":"IS","independent state of papua new guinea":"PG","independent state of samoa":"WS","india":"IN","indonesia":"ID","iran":"IR","iran, islamic republic of":"IR","iraq":"IQ","ireland":"IE","islamic republic of afghanistan":"AF","islamic republic of iran":"IR","islamic republic of mauritania":"MR","islamic republic of pakistan":"PK","isle of man":"IM","israel":"IL","italian republic":"IT","italy":"IT","ivory coast":"CI","jamaica":"JM","japan":"JP","jersey":"JE","jordan":"JO","kazakhstan":"KZ","kenya":"KE","kingdom of bahrain":"BH","kingdom of belgium":"BE","kingdom of bhutan":"BT","kingdom of cambodia":"KH","kingdom of denmark":"DK","kingdom of eswatini":"SZ","kingdom of lesotho":"LS","kingdom of morocco":"MA","kingdom of norway":"NO","kingdom of saudi arabia":"SA","kingdom of spain":"ES","kingdom of sweden":"SE","kingdom of thailand":"TH","kingdom of the netherlands":"NL","kingdom of tonga":"TO","kiribati":"KI","korea, democratic people's republic of":"KP","korea, republic of":"KR","kuwait":"KW","kyrgyz republic":"KG","kyrgyzstan":"KG","lao people's democratic republic":"LA","laos":"LA","latvia":"LV","lebanese republic":"LB","lebanon":"LB","lesotho":"LS","liberia":"LR","libya":"LY","liechtenstein":"LI","lithuania":"LT","luxembourg":"LU","macao":"MO","macao special administrative region of china":"MO","madagascar":"MG","malawi":"MW","malaysia":"MY","maldives":"MV","mali":"ML","malta":"MT","marshall islands":"MH","martinique":"MQ","mauritania":"MR","mauritius":"MU","mayotte":"YT","mexico":"MX","micronesia, federated states of":"FM","moldova":"MD","moldova, republic of":"MD","monaco":"MC","mongolia":"MN","montenegro":"ME","montserrat":"MS","morocco":"MA","mozambique":"MZ","myanmar":"MM","namibia":"NA","nauru":"NR","nepal":"NP","netherlands":"NL","new caledonia":"NC","new zealand":"NZ","nicaragua":"NI","niger":"NE","nigeria":"NG","niue":"NU","norfolk island":"NF","north korea":"KP","north macedonia":"MK","northern mariana islands":"MP","norway":"NO","oman":"OM","pakistan":"PK","palau":"PW","palestine, state of":"PS","panama":"PA","papua new guinea":"PG","paraguay":"PY","people's democratic republic of algeria":"DZ","people's republic of bangladesh":"BD","people's republic of china":"CN","peru":"PE","philippines":"PH","pitcairn":"PN","plurinational state of bolivia":"BO","poland":"PL","portugal":"PT","portuguese republic":"PT","principality of andorra":"AD","principality of liechtenstein":"LI","principality of monaco":"MC","puerto rico":"PR","qatar":"QA","republic of albania":"AL","republic of angola":"AO","republic of armenia":"AM","republic of austria":"AT","republic of azerbaijan":"AZ","republic of belarus":"BY","republic of benin":"BJ","republic of bosnia and herzegovina":"BA","republic of botswana":"BW","republic of bulgaria":"BG","republic of burundi":"BI","republic of cabo verde":"CV","republic of cameroon":"CM","republic of chad":"TD","republic of chile":"CL","republic of colombia":"CO","republic of costa rica":"CR","republic of croatia":"HR","republic of cuba":"CU","republic of cyprus":"CY","republic of côte d'ivoire":"CI","republic of djibouti":"DJ","republic of ecuador":"EC","republic of el salvador":"SV","republic of equatorial guinea":"GQ","republic of estonia":"EE","republic of fiji":"FJ","republic of finland":"FI","republic of ghana":"GH","republic of guatemala":"GT","republic of guinea":"GN","republic of guinea-bissau":"GW","republic of guyana":"GY","republic of haiti":"HT","republic of honduras":"HN","republic of iceland":"IS","republic of india":"IN","republic of indonesia":"ID","republic of iraq":"IQ","republic of kazakhstan":"KZ","republic of kenya":"KE","republic of kiribati":"KI","republic of latvia":"LV","republic of liberia":"LR","republic of lithuania":"LT","republic of madagascar":"MG","republic of malawi":"MW","republic of maldives":"MV","republic of mali":"ML","republic of malta":"MT","republic of mauritius":"MU","republic of moldova":"MD","republic of mozambique":"MZ","republic of myanmar":"MM","republic of namibia":"NA","republic of nauru":"NR","republic of nicaragua":"NI","republic of north macedonia":"MK","republic of palau":"PW","republic of panama":"PA","republic of paraguay":"PY","republic of peru":"PE","republic of poland":"PL","republic of san marino":"SM","republic of senegal":"SN","republic of serbia":"RS","republic of seychelles":"SC","republic of sierra leone":"SL","republic of singapore":"SG","republic of slovenia":"SI","republic of south africa":"ZA","republic of south sudan":"SS","republic of suriname":"SR","republic of tajikistan":"TJ","republic of the congo":"CG","republic of the gambia":"GM","republic of the marshall islands":"MH","republic of the niger":"NE","republic of the philippines":"PH","republic of the sudan":"SD","republic of trinidad and tobago":"TT","republic of tunisia":"TN","republic of türkiye":"TR","republic of uganda":"UG","republic of uzbekistan":"UZ","republic of vanuatu":"VU","republic of yemen":"YE","republic of zambia":"ZM","republic of zimbabwe":"ZW","romania":"RO","russia":"RU","russian federation":"RU","rwanda":"RW","rwandese republic":"RW","réunion":"RE","saint barthélemy":"BL","saint helena, ascension and tristan da cunha":"SH","saint kitts and nevis":"KN","saint lucia":"LC","saint martin (french part)":"MF","saint pierre and miquelon":"PM","saint vincent and the grenadines":"VC","samoa":"WS","san marino":"SM","sao tome and principe":"ST","saudi arabia":"SA","senegal":"SN","serbia":"RS","seychelles":"SC","sierra leone":"SL","singapore":"SG","sint maarten (dutch part)":"SX","slovak republic":"SK","slovakia":"SK","slovenia":"SI","socialist republic of viet nam":"VN","solomon islands":"SB","somalia":"SO","south africa":"ZA","south georgia and the south sandwich islands":"GS","south korea":"KR","south sudan":"SS","spain":"ES","sri lanka":"LK","state of israel":"IL","state of kuwait":"KW","state of qatar":"QA","sudan":"SD","sultanate of oman":"OM","suriname":"SR","svalbard and jan mayen":"SJ","swaziland":"SZ","sweden":"SE","swiss confederation":"CH","switzerland":"CH","syria":"SY","syrian arab republic":"SY","taiwan":"TW","taiwan, province of china":"TW","tajikistan":"TJ","tanzania":"TZ","tanzania, united republic of":"TZ","thailand":"TH","the state of eritrea":"ER","the state of palestine":"PS","timor-leste":"TL","togo":"TG","togolese republic":"TG","tokelau":"TK","tonga":"TO","trinidad and tobago":"TT","tunisia":"TN","turkey":"TR","turkmenistan":"TM","turks and caicos islands":"TC","tuvalu":"TV","türkiye":"TR","u.k.":"GB","u.s.":"US","u.s.a.":"US","uganda":"UG","uk":"GB","ukraine":"UA","union of the comoros":"KM","united arab emirates":"AE","united kingdom":"GB","united kingdom of great britain and northern ireland":"GB","united mexican states":"MX","united republic of tanzania":"TZ","united states":"US","united states minor outlying islands":"UM","united states of america":"US","uruguay":"UY","usa":"US","uzbekistan":"UZ","vanuatu":"VU","vatican city":"VA","venezuela":"VE","venezuela, bolivarian republic of":"VE","viet nam":"VN","vietnam":"VN","virgin islands of the united states":"VI","virgin islands, british":"VG","virgin islands, u.s.":"VI","wallis and futuna":"WF","western sahara":"EH","world":"XW","world wide":"XW","worldwide":"XW","yemen":"YE","zambia":"ZM","zimbabwe":"ZW","åland islands":"AX"}''')
+_COUNTRY_NAME_TO_ISO.update({
+    "uk": "GB", "u.k.": "GB", "great britain": "GB",
+    "usa": "US", "u.s.a.": "US", "u.s.": "US",
+    "europe": "XE", "worldwide": "XW", "world wide": "XW", "world": "XW",
+})
+
+_MEDIA_FORMAT_ALIASES = {
+    # CD-family names share the same physical carrier for this check.
+    "cd": "CD", "compact disc": "CD", "cd r": "CD", "cd g": "CD", "enhanced cd": "CD",
+    "hdcd": "CD", "shm cd": "CD", "super high material cd": "CD",
+    # Vinyl size is a subtype; compare carrier plus quantity, not the inch size.
+    "vinyl": "VINYL", "vinyl record": "VINYL", "record": "VINYL", "lp": "VINYL",
+    "cassette": "CASSETTE", "cassette tape": "CASSETTE", "compact cassette": "CASSETTE",
+    # Digital file quantity is track/file count, not physical-medium count.
+    "digital media": "DIGITAL", "file": "DIGITAL", "digital": "DIGITAL", "download": "DIGITAL",
+    "dvd": "DVD", "digital versatile disc": "DVD", "dvd r": "DVD",
+    "dvd video": "DVD-VIDEO", "dvd v": "DVD-VIDEO",
+    "dvd audio": "DVD-AUDIO", "dvd a": "DVD-AUDIO",
+    "blu ray": "BLU-RAY", "blu ray disc": "BLU-RAY",
+    "sacd": "SACD", "super audio cd": "SACD",
+    "minidisc": "MINIDISC", "mini disc": "MINIDISC",
+    "laserdisc": "LASERDISC", "laser disc": "LASERDISC",
+    "vhs": "VHS", "vhs tape": "VHS",
+    "8 track": "8-TRACK", "8 track cartridge": "8-TRACK",
+    "shellac": "SHELLAC", "reel to reel": "REEL-TO-REEL",
+    "open reel": "REEL-TO-REEL", "dat": "DAT", "digital audio tape": "DAT",
+    "usb flash drive": "USB", "usb": "USB", "memory stick": "USB",
+    "floppy disk": "FLOPPY", "cartridge": "CARTRIDGE",
+}
+
+# These Discogs entries describe packaging or an aggregate, not an additional
+# physical carrier. They remain visible in the report but are not counted.
+_DISCOGS_NON_CARRIER_FORMATS = {"all media", "box set"}
+
+
+def _compact_name(value: Any) -> str:
+    value = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).split())
+
+
+def normalize_media_format(value: Any, descriptions: Any = None) -> str | None:
+    """Map MB and Discogs names to a shared carrier vocabulary.
+
+    DVD-Audio and DVD-Video remain distinct when Discogs supplies the matching
+    description. A generic Discogs DVD is kept generic and cannot prove a match
+    to either MusicBrainz subtype.
+    """
+    key = _compact_name(value)
+    if not key or key in _DISCOGS_NON_CARRIER_FORMATS:
+        return None
+    if re.fullmatch(r"\d+(?:\s+inch)?\s+vinyl", key):
+        return "VINYL"
+    if key == "dvd":
+        descs = descriptions if isinstance(descriptions, list) else []
+        desc_keys = {_compact_name(x) for x in descs}
+        has_audio = bool(desc_keys & {"dvd audio", "dvd a"})
+        has_video = bool(desc_keys & {"dvd video", "dvd v"})
+        if has_audio and has_video:
+            return None
+        if has_audio:
+            return "DVD-AUDIO"
+        if has_video:
+            return "DVD-VIDEO"
+    return _MEDIA_FORMAT_ALIASES.get(key)
+
+
+def _format_counts_from_musicbrainz(release: dict[str, Any]) -> tuple[Counter[str], list[str], list[str]]:
+    media = release.get("media")
+    counts: Counter[str] = Counter()
+    raw: list[str] = []
+    unknown: list[str] = []
+    if not isinstance(media, list) or not media:
+        return counts, raw, unknown
+    for item in media:
+        if not isinstance(item, dict):
+            unknown.append("[invalid medium entry]")
+            continue
+        name = str(item.get("format") or "").strip()
+        if not name:
+            unknown.append("[missing MusicBrainz medium format]")
+            continue
+        raw.append(name)
+        canonical = normalize_media_format(name)
+        if canonical is None:
+            unknown.append(name)
+        elif canonical == "DIGITAL":
+            # A MusicBrainz digital medium contains tracks/files; it is not one
+            # physical disc per track or per file. Presence is what matters.
+            counts[canonical] = 1
+        else:
+            counts[canonical] += 1
+    return counts, raw, unknown
+
+
+def _format_counts_from_discogs(release: dict[str, Any]) -> tuple[Counter[str], list[str], list[str]]:
+    formats = release.get("formats")
+    counts: Counter[str] = Counter()
+    raw: list[str] = []
+    unknown: list[str] = []
+    if not isinstance(formats, list) or not formats:
+        return counts, raw, unknown
+    for item in formats:
+        if not isinstance(item, dict):
+            unknown.append("[invalid Discogs format entry]")
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            unknown.append("[missing Discogs format name]")
+            continue
+        name_key = _compact_name(name)
+        if name_key in _DISCOGS_NON_CARRIER_FORMATS:
+            raw.append(f"{name} (ignored: packaging/aggregate descriptor)")
+            continue
+        descriptions = item.get("descriptions", [])
+        canonical = normalize_media_format(name, descriptions=descriptions)
+        if canonical is None:
+            raw.append(name)
+            unknown.append(name)
+            continue
+        qty_value = item.get("qty")
+        qty_raw = "" if qty_value is None else str(qty_value).strip()
+        if canonical == "DIGITAL":
+            # Discogs File qty counts digital files/tracks, not physical media.
+            # Compare digital presence only and do not require a numeric qty.
+            counts[canonical] = 1
+            raw.append(f"{name} (digital; qty not used: {qty_raw or 'not supplied'})")
+            continue
+        if not qty_raw or not qty_raw.isdigit() or int(qty_raw) < 1:
+            raw.append(name)
+            unknown.append(f"{name} (invalid qty: {qty_raw or 'missing'})")
+            continue
+        counts[canonical] += int(qty_raw)
+        raw.append(f"{name} x{qty_raw}")
+    return counts, raw, unknown
+
+
+def compare_media_formats(mb_release: dict[str, Any], dg_release: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Compare carrier types and physical quantities; unknown values fail closed."""
+    mb_counts, mb_raw, mb_unknown = _format_counts_from_musicbrainz(mb_release)
+    dg_counts, dg_raw, dg_unknown = _format_counts_from_discogs(dg_release)
+    mb_display = "; ".join(mb_raw)
+    dg_display = "; ".join(dg_raw)
+    if not mb_raw or not dg_raw:
+        return "MISSING", mb_display, dg_display, ""
+    if mb_unknown or dg_unknown:
+        detail = "MB unknown: " + ", ".join(mb_unknown) + "; Discogs unknown: " + ", ".join(dg_unknown)
+        return "UNMAPPABLE", mb_display, dg_display, detail.strip(" ;")
+    if not mb_counts or not dg_counts:
+        return "MISSING", mb_display, dg_display, "No concrete medium type was available."
+
+    # A generic Discogs DVD does not state whether it is DVD-Audio or DVD-Video.
+    # Do not call it a match or mismatch against a specific MusicBrainz subtype.
+    for generic, specific in (("DVD", "DVD-AUDIO"), ("DVD", "DVD-VIDEO")):
+        if (mb_counts.get(generic, 0) and dg_counts.get(specific, 0)) or \
+           (dg_counts.get(generic, 0) and mb_counts.get(specific, 0)):
+            return "UNMAPPABLE", mb_display, dg_display, "Discogs/MB DVD subtype is not specified consistently enough to confirm the medium."
+
+    if mb_counts != dg_counts:
+        return "MISMATCH", mb_display, dg_display, f"MusicBrainz={dict(sorted(mb_counts.items()))}; Discogs={dict(sorted(dg_counts.items()))}"
+    ignored = [v for v in dg_raw if "(ignored:" in v]
+    detail = "Ignored non-carrier Discogs descriptors: " + ", ".join(ignored) if ignored else ""
+    return "MATCH", mb_display, dg_display, detail
+
+
+def _year_from_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    match = re.match(r"^\s*(\d{4})(?:$|[-\s])", str(value))
+    if not match:
+        return None
+    year = int(match.group(1))
+    return year if 1000 <= year <= 2999 else None
+
+
+def extract_musicbrainz_year(release: dict[str, Any]) -> tuple[int | None, str]:
+    direct = _year_from_value(release.get("date"))
+    if direct is not None:
+        return direct, ""
+    event_years = set()
+    events = release.get("release-events")
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, dict):
+                year = _year_from_value(event.get("date"))
+                if year is not None:
+                    event_years.add(year)
+    if len(event_years) == 1:
+        return next(iter(event_years)), ""
+    if len(event_years) > 1:
+        return None, "Multiple MusicBrainz release-event years: " + ",".join(map(str, sorted(event_years)))
+    return None, ""
+
+
+def extract_discogs_year(release: dict[str, Any]) -> tuple[int | None, str]:
+    api_year = _year_from_value(release.get("year"))
+    released_year = _year_from_value(release.get("released"))
+    if api_year is not None and released_year is not None and api_year != released_year:
+        return None, f"Discogs year={api_year} conflicts with released={released_year}"
+    return api_year if api_year is not None else released_year, ""
+
+
+def compare_release_years(mb_release: dict[str, Any], dg_release: dict[str, Any]) -> tuple[str, str, str, str]:
+    mb_year, mb_issue = extract_musicbrainz_year(mb_release)
+    dg_year, dg_issue = extract_discogs_year(dg_release)
+    if mb_issue or dg_issue:
+        return "AMBIGUOUS", str(mb_year or ""), str(dg_year or ""), "; ".join(x for x in (mb_issue, dg_issue) if x)
+    if mb_year is None or dg_year is None:
+        return "MISSING", str(mb_year or ""), str(dg_year or ""), ""
+    if mb_year != dg_year:
+        return "MISMATCH", str(mb_year), str(dg_year), f"MusicBrainz={mb_year}; Discogs={dg_year}"
+    return "MATCH", str(mb_year), str(dg_year), ""
+
+
+def _mb_country_codes(release: dict[str, Any]) -> tuple[set[str], str]:
+    direct = str(release.get("country") or "").strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", direct):
+        return {direct}, ""
+    events = release.get("release-events")
+    codes: set[str] = set()
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            area = event.get("area") or {}
+            if not isinstance(area, dict):
+                continue
+            values = area.get("iso-3166-1-codes") or []
+            if isinstance(values, list):
+                codes.update(str(x).strip().upper() for x in values if re.fullmatch(r"[A-Z]{2}", str(x).strip().upper()))
+    if len(codes) == 1:
+        return codes, ""
+    if len(codes) > 1:
+        return codes, "Multiple MusicBrainz release-event countries: " + ",".join(sorted(codes))
+    return set(), ""
+
+
+_EUROPE_COUNTRY_CODES = frozenset({
+    "AD", "AL", "AT", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DE", "DK",
+    "EE", "ES", "FI", "FO", "FR", "GB", "GE", "GI", "GR", "HR", "HU", "IE",
+    "IS", "IT", "LI", "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL",
+    "NO", "PL", "PT", "RO", "RS", "RU", "SE", "SI", "SK", "SM", "TR", "UA", "VA",
+})
+
+_COUNTRY_COMPOUND_AREAS = {
+    "uk europe": "AREA:UK_EUROPE",
+    "uk ireland": "AREA:UK_IRELAND",
+    "australia new zealand": "AREA:AU_NZ",
+    "uk europe us": "AREA:UK_EUROPE_US",
+}
+
+
+def normalize_discogs_country(value: Any) -> str | None:
+    """Normalize a single Discogs country/area; known compound territories stay explicit."""
+    key = _compact_name(value)
+    if not key:
+        return None
+    if key in _COUNTRY_COMPOUND_AREAS:
+        return _COUNTRY_COMPOUND_AREAS[key]
+    direct = _COUNTRY_NAME_TO_ISO.get(str(value).strip().casefold())
+    if direct:
+        return direct
+    for name, code in _COUNTRY_NAME_TO_ISO.items():
+        if _compact_name(name) == key:
+            return code
+    if re.fullmatch(r"[a-z]{2}", key):
+        return key.upper()
+    return None
+
+
+def _country_area_members(code: str) -> set[str] | None:
+    """Return known member countries for broad areas; None means worldwide."""
+    if code == "XW":
+        return None
+    if code == "XE":
+        return set(_EUROPE_COUNTRY_CODES)
+    if code == "AREA:UK_EUROPE":
+        return set(_EUROPE_COUNTRY_CODES) | {"GB"}
+    if code == "AREA:UK_IRELAND":
+        return {"GB", "IE"}
+    if code == "AREA:AU_NZ":
+        return {"AU", "NZ"}
+    if code == "AREA:UK_EUROPE_US":
+        return set(_EUROPE_COUNTRY_CODES) | {"US"}
+    # A specific ISO country is a one-member territory for overlap testing.
+    if re.fullmatch(r"[A-Z]{2}", code):
+        return {code}
+    return set()
+
+
+def compare_release_countries(mb_release: dict[str, Any], dg_release: dict[str, Any]) -> tuple[str, str, str, str]:
+    mb_codes, mb_issue = _mb_country_codes(mb_release)
+    dg_raw = str(dg_release.get("country") or "").strip()
+    dg_code = normalize_discogs_country(dg_raw)
+    mb_display = ";".join(sorted(mb_codes))
+    if not mb_codes or not dg_raw:
+        return "MISSING", mb_display, dg_raw, ""
+    if mb_issue:
+        return "AMBIGUOUS", mb_display, dg_raw, mb_issue
+    if dg_code is None:
+        return "UNMAPPABLE", mb_display, dg_raw, "Discogs country/area is not an unambiguous ISO country or known MusicBrainz area."
+    if len(mb_codes) != 1:
+        return "AMBIGUOUS", mb_display, dg_raw, "MusicBrainz country is not unique."
+    mb_code = next(iter(mb_codes))
+    if mb_code == dg_code:
+        return "MATCH", mb_code, dg_raw, ""
+
+    mb_members = _country_area_members(mb_code)
+    dg_members = _country_area_members(dg_code)
+    if mb_code == "XW" or dg_code == "XW":
+        return "AMBIGUOUS", mb_code, dg_raw, "Worldwide overlaps every specific country/area; country specificity cannot be confirmed."
+
+    mb_is_region = mb_code.startswith("AREA:") or mb_code == "XE"
+    dg_is_region = dg_code.startswith("AREA:") or dg_code == "XE"
+    if mb_is_region or dg_is_region:
+        if mb_members is None or dg_members is None:
+            return "AMBIGUOUS", mb_code, dg_raw, "One side is a broad/compound territory; exact country equality cannot be confirmed."
+        overlap = mb_members.intersection(dg_members)
+        if overlap:
+            return "AMBIGUOUS", mb_code, dg_raw, "The territories overlap (" + ",".join(sorted(overlap)) + "); they are not the same level of geographic specificity."
+        return "MISMATCH", mb_code, dg_raw, f"MusicBrainz={mb_code}; Discogs={dg_raw} ({dg_code}); territories do not overlap."
+
+    if mb_code != dg_code:
+        return "MISMATCH", mb_code, dg_raw, f"MusicBrainz={mb_code}; Discogs={dg_raw} ({dg_code})"
+    return "MATCH", mb_code, dg_raw, ""
+
 def mb_artist_credit(release: dict[str, Any]) -> str:
     chunks: list[str] = []
     credits = release.get("artist-credit", [])
@@ -362,8 +740,57 @@ def mb_discogs_links(release: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def fetch_blacklist_mbids() -> set[str]:
-    """Fetch official blacklist page every run; fail closed if its release IDs cannot be read."""
-    html_bytes, _ = http_get(BLACKLIST_URL, {"Accept": "text/html"}, timeout=45)
+    """Fetch the official blacklist with bounded retries; fail closed on any final failure.
+
+    Retry only transient transport failures and temporary HTTP responses. A successful
+    HTTP response whose contents cannot be parsed is not retried as a network failure.
+    """
+    max_attempts = 5
+    retryable_http_statuses = {408, 425, 429, 500, 502, 503, 504}
+    last_error: Exception | None = None
+    html_bytes: bytes | None = None
+
+    for attempt in range(max_attempts):
+        try:
+            html_bytes, _ = http_get(
+                BLACKLIST_URL,
+                {"Accept": "text/html"},
+                timeout=45,
+            )
+            break
+        except HTTPStatusError as exc:
+            last_error = exc
+            if exc.status not in retryable_http_statuses:
+                raise
+            retryable = True
+            error_label = f"HTTP {exc.status}"
+        except RuntimeError as exc:
+            last_error = exc
+            # http_get wraps TLS EOF, connection reset, timeout and other transport
+            # failures as "Network error for ...". Do not retry unrelated errors.
+            if not str(exc).startswith("Network error for "):
+                raise
+            retryable = True
+            error_label = str(exc)
+
+        if attempt == max_attempts - 1:
+            break
+
+        delay = 2 ** (attempt + 1)  # 2, 4, 8, 16 seconds
+        print(
+            f"  Blacklist fetch failed ({error_label}); retry "
+            f"{attempt + 2}/{max_attempts} in {delay}s",
+            flush=True,
+        )
+        time.sleep(delay)
+
+    if html_bytes is None:
+        raise RuntimeError(
+            f"Could not download the official Discogs-link blacklist after "
+            f"{max_attempts} attempts. Failing closed; no candidates were processed. "
+            f"Last error: {last_error}"
+        ) from last_error
+
     parser = AnchorCollector()
     parser.feed(html_bytes.decode("utf-8", "replace"))
     ids: set[str] = set()
@@ -416,9 +843,19 @@ def load_input(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         rows = list(reader)
+        fieldnames = set(reader.fieldnames or [])
     required = {"mbid", "barcode", "discogs_url", "discogs_release_id"}
-    if not rows or not required.issubset(set(rows[0].keys())):
-        raise RuntimeError(f"Input must be a Stage 1 TSV with columns: {', '.join(sorted(required))}")
+    if not rows or not required.issubset(fieldnames):
+        raise RuntimeError(f"Input must be a Stage 1 TSV or a filtered Stage 2 TSV with columns: {', '.join(sorted(required))}")
+    # When a Stage 2 report is used as the input (for example, the previously
+    # reviewed first-100 pilot), refuse to silently re-check MANUAL/REJECT rows.
+    if "status" in fieldnames:
+        invalid = [str(row.get("mbid") or "") for row in rows if str(row.get("status") or "").strip() != "AUTO_CANDIDATE"]
+        if invalid:
+            raise RuntimeError(
+                f"Stage 2 report input contains {len(invalid)} row(s) that are not AUTO_CANDIDATE. "
+                "Use a filtered AUTO_CANDIDATE-only TSV or the Stage 1 candidate TSV."
+            )
     return rows
 
 
@@ -426,7 +863,7 @@ def fetch_mb_release(mbid: str, base_url: str, cache: JsonCache) -> dict[str, An
     cached = cache.get(mbid)
     if cached is not None:
         return cached
-    query = urllib.parse.urlencode({"inc": "artist-credits+url-rels+labels", "fmt": "json"})
+    query = urllib.parse.urlencode({"inc": "artist-credits+url-rels+labels+media", "fmt": "json"})
     url = f"{base_url.rstrip('/')}/ws/2/release/{urllib.parse.quote(mbid)}?{query}"
     data, _ = http_get_json(url, {"Accept": "application/json"}, timeout=45)
     release = data.get("release")
@@ -437,6 +874,20 @@ def fetch_mb_release(mbid: str, base_url: str, cache: JsonCache) -> dict[str, An
         raise RuntimeError(f"Unexpected MusicBrainz response structure for MBID {mbid}")
     cache.put(mbid, release)
     return release
+
+
+def has_digital_media_format(release: dict[str, Any]) -> bool:
+    """Return True when any MusicBrainz medium is explicitly Digital Media."""
+    media = release.get("media")
+    if not isinstance(media, list):
+        return False
+    for medium in media:
+        if not isinstance(medium, dict):
+            continue
+        media_format = " ".join(str(medium.get("format") or "").split()).casefold()
+        if media_format == "digital media":
+            return True
+    return False
 
 
 def fetch_discogs_release(release_id: str, token: str, user_agent: str, delay: float,
@@ -502,6 +953,23 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
         "mb_catalog_numbers": ";".join(mb_catalog_numbers),
         "discogs_api_labels": ";".join(dg_labels),
         "discogs_api_catalog_numbers": ";".join(dg_catalog_numbers),
+        "mb_media_formats": "",
+        "discogs_api_formats": "",
+        "media_format_check": "NOT_CHECKED",
+        "mb_release_date": str(mb.get("date") or ""),
+        "mb_release_year": "",
+        "discogs_api_released": str(dg.get("released") or ""),
+        "discogs_api_year": "",
+        "discogs_api_year_raw": str(dg.get("year") or ""),
+        "year_check": "NOT_CHECKED",
+        "mb_release_country": "",
+        "mb_release_country_raw": str(mb.get("country") or ""),
+        "discogs_api_country": "",
+        "discogs_api_country_raw": str(dg.get("country") or ""),
+        "country_check": "NOT_CHECKED",
+        "media_format_details": "",
+        "year_details": "",
+        "country_details": "",
         "input_mb_barcode_check": "NOT_CHECKED",
         "discogs_barcode_check": "NOT_CHECKED",
         "label_check": "NOT_PRESENT_IN_MUSICBRAINZ" if not mb_labels else "NOT_CHECKED",
@@ -528,8 +996,7 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
         findings.append(("MANUAL_MB_BARCODE_MISSING", "MUSICBRAINZ_RELEASE_HAS_NO_BARCODE"))
         result["input_mb_barcode_check"] = "MUSICBRAINZ_BARCODE_MISSING"
     elif barcodes_equivalent(input_barcode, mb_barcode):
-        result["input_mb_barcode_check"] = "MATCH"
-        if input_barcode != mb_barcode:
+        result["input_mb_barcode_check"] = "MATCH"        if input_barcode != mb_barcode:
             actions.append("UPC_A_EAN_13_EQUIVALENCE_MB_BARCODE")
     else:
         reject_findings.append(("REJECT_MB_BARCODE_MISMATCH", "INPUT_BARCODE_DIFFERS_FROM_CURRENT_MUSICBRAINZ_BARCODE"))
@@ -574,6 +1041,85 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
             result["discogs_barcode_check"] = "MATCH_EXACT" if exact else "MATCH_UPC_A_EAN_13_EQUIVALENT"
             if not exact:
                 actions.append("UPC_A_EAN_13_EQUIVALENCE_DISCOGS_BARCODE")
+
+    # Release identity checks: compare only fields for which MusicBrainz has usable
+    # data. A missing MusicBrainz value is not a mismatch and is not required.
+    # However, when MusicBrainz supplies a field, missing or uncertain Discogs
+    # data still routes the candidate to MANUAL.
+    mb_media = mb.get("media")
+    mb_has_medium = (
+        isinstance(mb_media, list)
+        and any(isinstance(item, dict) and str(item.get("format") or "").strip() for item in mb_media)
+    )
+    if mb_has_medium:
+        media_mode, mb_media_display, dg_media_display, media_details = compare_media_formats(mb, dg)
+    else:
+        _mb_counts, mb_raw, _mb_unknown = _format_counts_from_musicbrainz(mb)
+        _dg_counts, dg_raw, _dg_unknown = _format_counts_from_discogs(dg)
+        media_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_media_display = "; ".join(mb_raw)
+        dg_media_display = "; ".join(dg_raw)
+        media_details = "MusicBrainz has no usable medium format; comparison skipped."
+    result["mb_media_formats"] = mb_media_display
+    result["discogs_api_formats"] = dg_media_display
+    result["media_format_check"] = media_mode
+    result["media_format_details"] = media_details
+    if media_mode == "MISSING":
+        findings.append(("MANUAL_MEDIA_FORMAT_MISSING", "MUSICBRAINZ_HAS_MEDIUM_BUT_DISCOGS_FORMAT_IS_MISSING"))
+    elif media_mode == "UNMAPPABLE":
+        findings.append(("MANUAL_MEDIA_FORMAT_UNMAPPABLE", "ONE_OR_MORE_MEDIUM_FORMATS_CANNOT_BE_SAFELY_NORMALIZED"))
+    elif media_mode == "MISMATCH":
+        findings.append(("MANUAL_MEDIA_FORMAT_MISMATCH", "MUSICBRAINZ_AND_DISCOGS_MEDIUM_FORMATS_OR_COUNTS_DIFFER"))
+
+    mb_year_value, mb_year_issue = extract_musicbrainz_year(mb)
+    mb_raw_date = str(mb.get("date") or "").strip()
+    mb_event_dates = mb.get("release-events")
+    has_raw_mb_event_date = isinstance(mb_event_dates, list) and any(
+        isinstance(event, dict) and str(event.get("date") or "").strip()
+        for event in mb_event_dates
+    )
+    mb_has_year_data = mb_year_value is not None or bool(mb_year_issue) or bool(mb_raw_date) or has_raw_mb_event_date
+    if not mb_has_year_data:
+        dg_year_value, _dg_year_issue = extract_discogs_year(dg)
+        year_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_year = ""
+        dg_year = str(dg_year_value or "")
+        year_details = "MusicBrainz has no usable release year; comparison skipped."
+    else:
+        year_mode, mb_year, dg_year, year_details = compare_release_years(mb, dg)
+    result["mb_release_year"] = mb_year
+    result["discogs_api_year"] = dg_year
+    result["year_check"] = year_mode
+    result["year_details"] = year_details
+    if year_mode == "MISSING":
+        findings.append(("MANUAL_YEAR_MISSING", "MUSICBRAINZ_HAS_YEAR_BUT_DISCOGS_YEAR_IS_MISSING"))
+    elif year_mode == "AMBIGUOUS":
+        findings.append(("MANUAL_YEAR_AMBIGUOUS", "RELEASE_YEAR_SOURCE_CONFLICT_OR_MULTIPLE_YEARS"))
+    elif year_mode == "MISMATCH":
+        findings.append(("MANUAL_YEAR_MISMATCH", "MUSICBRAINZ_AND_DISCOGS_RELEASE_YEARS_DIFFER"))
+
+    mb_country_codes, mb_country_issue = _mb_country_codes(mb)
+    mb_raw_country = str(mb.get("country") or "").strip()
+    mb_has_country_data = bool(mb_country_codes) or bool(mb_country_issue) or bool(mb_raw_country)
+    if not mb_has_country_data:
+        country_mode = "NOT_PRESENT_IN_MUSICBRAINZ"
+        mb_country = ""
+        dg_country = str(dg.get("country") or "").strip()
+        country_details = "MusicBrainz has no usable release country; comparison skipped."
+    else:
+        country_mode, mb_country, dg_country, country_details = compare_release_countries(mb, dg)
+    result["mb_release_country"] = mb_country
+    result["discogs_api_country"] = dg_country
+    result["country_check"] = country_mode
+    result["country_details"] = country_details
+    if country_mode == "MISSING":
+        findings.append(("MANUAL_COUNTRY_MISSING", "MUSICBRAINZ_HAS_COUNTRY_BUT_DISCOGS_COUNTRY_IS_MISSING"))
+    elif country_mode == "AMBIGUOUS":
+        findings.append(("MANUAL_COUNTRY_AMBIGUOUS", "MUSICBRAINZ_RELEASE_COUNTRY_IS_AMBIGUOUS"))
+    elif country_mode == "UNMAPPABLE":
+        findings.append(("MANUAL_COUNTRY_UNMAPPABLE", "DISCOGS_RELEASE_COUNTRY_CANNOT_BE_SAFELY_MAPPED"))
+    elif country_mode == "MISMATCH":
+        findings.append(("MANUAL_COUNTRY_MISMATCH", "MUSICBRAINZ_AND_DISCOGS_RELEASE_COUNTRIES_DIFFER"))
 
     # Helpers for normalized Label/Catalog Number comparisons.
     def labels_equal(mb_label: str, dg_label: str) -> bool:
@@ -717,6 +1263,16 @@ def evaluate(row: dict[str, str], mb: dict[str, Any], dg: dict[str, Any], blackl
     else:
         status = "AUTO_CANDIDATE"
         passed = ["ARTIST_MATCH", "TITLE_MATCH", "BARCODE_MATCH", "NO_EXISTING_DISCOGS_LINK", "NOT_BLACKLISTED"]
+        for field_name, label in (
+            ("media_format_check", "MEDIA_FORMAT"),
+            ("year_check", "YEAR"),
+            ("country_check", "COUNTRY"),
+        ):
+            check_value = result[field_name]
+            if check_value == "MATCH":
+                passed.append(label + "_MATCH")
+            elif check_value == "NOT_PRESENT_IN_MUSICBRAINZ":
+                passed.append(label + "_NOT_PRESENT_IN_MUSICBRAINZ")
         if result["label_check"].startswith("MATCH"):
             passed.append("LABEL_CHECK_" + result["label_check"])
         if result["catalog_number_check"].startswith("MATCH"):
@@ -741,115 +1297,655 @@ def write_report(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Read-only v5 verification with conservative normalization.")
-    parser.add_argument("input", nargs="?", default="discogs_bot_preflight_output/stage1_unique_release_candidates.tsv")
-    parser.add_argument("--mb-base-url", default=os.environ.get("MUSICBRAINZ_BASE_URL", DEFAULT_MB_BASE_URL))
-    parser.add_argument("--discogs-delay", type=float, default=1.1, help="Minimum seconds between Discogs API requests (default: 1.1)")
-    parser.add_argument("--limit", type=int, default=0, help="Verify only first N rows (0 = all); use for a small pilot")
-    parser.add_argument("--out-dir", default="discogs_bot_verify_output")
-    parser.add_argument("--cache-dir", default="discogs_bot_verify_output/cache", help="Cache root; may reuse fresh v4 Discogs/MB cache data")
-    parser.add_argument("--user-agent", default=os.environ.get("DISCOGS_USER_AGENT", DEFAULT_DISCOGS_USER_AGENT))
-    args = parser.parse_args()
 
+# ----------------------- V8 Phase 2: Discogs discovery ----------------------
+PER_PAGE_V8 = 100
+
+
+def _discogs_cache_key(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def fetch_discogs_json_v8(url: str, cache_key: str, token: str, user_agent: str,
+                          delay: float, cache: JsonCache, last_request: list[float]) -> dict[str, Any]:
+    key = _discogs_cache_key(cache_key)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    elapsed = time.monotonic() - last_request[0]
+    if last_request[0] and elapsed < delay:
+        time.sleep(delay - elapsed)
+    headers = {
+        "Authorization": f"Discogs token={token}",
+        "User-Agent": user_agent,
+        "Accept": "application/json",
+    }
+    last_request[0] = time.monotonic()
+    data, _headers = http_get_json(url, headers, timeout=45)
+    cache.put(key, data)
+    return data
+
+
+def fetch_discogs_search_page_v8(barcode: str, page: int, token: str, user_agent: str,
+                                 delay: float, cache: JsonCache, last_request: list[float]) -> dict[str, Any]:
+    params = urllib.parse.urlencode({"barcode": barcode, "type": "release", "per_page": PER_PAGE_V8, "page": page})
+    url = f"https://api.discogs.com/database/search?{params}"
+    cache_key = f"search|barcode={barcode}|type=release|per_page={PER_PAGE_V8}|page={page}"
+    return fetch_discogs_json_v8(url, cache_key, token, user_agent, delay, cache, last_request)
+
+
+def _pagination_counts_v8(data: dict[str, Any], context: str) -> tuple[int, int]:
+    pagination = data.get("pagination")
+    if not isinstance(pagination, dict):
+        raise RuntimeError(f"{context}: response is missing pagination metadata")
+    try:
+        total_items = int(pagination["items"])
+        total_pages = int(pagination["pages"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{context}: pagination.items/pages is missing or invalid") from exc
+    if total_items < 0 or total_pages < 0 or (total_items > 0 and total_pages < 1):
+        raise RuntimeError(f"{context}: invalid pagination counts")
+    return total_items, total_pages
+
+
+def fetch_all_discogs_results_v8(barcode: str, token: str, user_agent: str, delay: float,
+                                 cache: JsonCache, last_request: list[float]) -> tuple[int, int, list[dict[str, Any]]]:
+    first = fetch_discogs_search_page_v8(barcode, 1, token, user_agent, delay, cache, last_request)
+    total_items, total_pages = _pagination_counts_v8(first, "Discogs barcode search")
+    all_results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_page(data: dict[str, Any]) -> None:
+        rows = data.get("results")
+        if not isinstance(rows, list):
+            raise RuntimeError("Discogs search response has no results list")
+        for item in rows:
+            if not isinstance(item, dict) or str(item.get("type") or "").casefold() != "release":
+                continue
+            rid = str(item.get("id") or "").strip()
+            if rid.isdigit() and rid not in seen:
+                seen.add(rid)
+                all_results.append(item)
+
+    if total_pages:
+        add_page(first)
+    for page in range(2, total_pages + 1):
+        add_page(fetch_discogs_search_page_v8(barcode, page, token, user_agent, delay, cache, last_request))
+    if total_items and not all_results:
+        raise RuntimeError("Discogs reports search results but returned no valid release rows")
+    return total_items, total_pages, all_results
+
+
+def fetch_master_versions_page_v8(master_id: str, page: int, token: str, user_agent: str,
+                                  delay: float, cache: JsonCache, last_request: list[float]) -> dict[str, Any]:
+    params = urllib.parse.urlencode({"per_page": PER_PAGE_V8, "page": page})
+    url = f"https://api.discogs.com/masters/{urllib.parse.quote(master_id)}/versions?{params}"
+    cache_key = f"master_versions|master_id={master_id}|per_page={PER_PAGE_V8}|page={page}"
+    return fetch_discogs_json_v8(url, cache_key, token, user_agent, delay, cache, last_request)
+
+
+def fetch_all_master_versions_v8(master_id: str, token: str, user_agent: str, delay: float,
+                                 cache: JsonCache, last_request: list[float]) -> tuple[int, int, list[dict[str, Any]]]:
+    first = fetch_master_versions_page_v8(master_id, 1, token, user_agent, delay, cache, last_request)
+    total_items, total_pages = _pagination_counts_v8(first, f"Discogs master {master_id} versions")
+    versions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_page(data: dict[str, Any]) -> None:
+        rows = data.get("versions")
+        if not isinstance(rows, list):
+            raise RuntimeError(f"Discogs master {master_id} response has no versions list")
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            rid = str(item.get("id") or "").strip()
+            if rid.isdigit() and rid not in seen:
+                seen.add(rid)
+                versions.append(item)
+
+    if total_pages:
+        add_page(first)
+    for page in range(2, total_pages + 1):
+        add_page(fetch_master_versions_page_v8(master_id, page, token, user_agent, delay, cache, last_request))
+    if total_items and not versions:
+        raise RuntimeError(f"Discogs master {master_id} reports versions but returned no valid release IDs")
+    return total_items, total_pages, versions
+
+
+def expand_candidates_for_master_results_v8(search_total: int, search_results: list[dict[str, Any]],
+                                            load_versions) -> tuple[list[dict[str, Any]], list[str], int]:
+    candidates: list[dict[str, Any]] = []
+    seen_release_ids: set[str] = set()
+
+    def add_candidate(item: dict[str, Any], source: str, master_id: str = "") -> None:
+        rid = str(item.get("id") or "").strip()
+        if not rid.isdigit() or rid in seen_release_ids:
+            return
+        seen_release_ids.add(rid)
+        raw_format = item.get("format", [])
+        fmt = "; ".join(str(v) for v in raw_format if v) if isinstance(raw_format, list) else str(raw_format or "").strip()
+        candidates.append({
+            "id": rid,
+            "title": str(item.get("title") or "").strip(),
+            "candidate_source": source,
+            "master_id": master_id or str(item.get("master_id") or "").strip(),
+            "version_year": str(item.get("released") or item.get("year") or "").strip(),
+            "version_country": str(item.get("country") or "").strip(),
+            "version_format": fmt,
+        })
+
+    # Preserve every direct barcode search result.
+    for item in search_results:
+        if isinstance(item, dict):
+            add_candidate(item, "BARCODE_SEARCH")
+
+    expanded_master_ids: list[str] = []
+    expanded_version_rows = 0
+    # Exactly as V7: only multiple direct search hits trigger expansion of masters.
+    if search_total > 1:
+        master_ids: list[str] = []
+        seen_master_ids: set[str] = set()
+        for item in search_results:
+            if not isinstance(item, dict):
+                continue
+            mid = str(item.get("master_id") or "").strip()
+            if mid.isdigit() and mid != "0" and mid not in seen_master_ids:
+                seen_master_ids.add(mid)
+                master_ids.append(mid)
+        for mid in master_ids:
+            versions = load_versions(mid)
+            expanded_master_ids.append(mid)
+            expanded_version_rows += len(versions)
+            for item in versions:
+                if isinstance(item, dict):
+                    add_candidate(item, "MASTER_VERSION", mid)
+    return candidates, expanded_master_ids, expanded_version_rows
+
+
+def _candidate_format_carriers_v8(candidate: dict[str, Any]) -> set[str]:
+    raw = candidate.get("version_format") or candidate.get("format") or []
+    if isinstance(raw, list):
+        values = [str(v).strip() for v in raw if str(v).strip()]
+    else:
+        values = [p.strip() for p in re.split(r"[;,]", str(raw).strip()) if p.strip()]
+    return {canonical for value in values if (canonical := normalize_media_format(value))}
+
+
+def prefilter_candidates_by_mb_identity_v8(candidates: list[dict[str, Any]], mb_release: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """V7 conservative prefilter: remove only definite medium/year/country contradictions."""
+    mb_medium_counts, _mb_raw, mb_medium_unknown = _format_counts_from_musicbrainz(mb_release)
+    medium_types = set(mb_medium_counts)
+    medium_enabled = bool(medium_types) and not mb_medium_unknown
+    mb_year, mb_year_issue = extract_musicbrainz_year(mb_release)
+    year_enabled = mb_year is not None and not mb_year_issue
+    mb_country_codes, mb_country_issue = _mb_country_codes(mb_release)
+    country_enabled = len(mb_country_codes) == 1 and not mb_country_issue
+    fields_checked = [name for name, enabled in (("medium", medium_enabled), ("year", year_enabled), ("country", country_enabled)) if enabled]
+    counts = {"medium": 0, "year": 0, "country": 0}
+    kept: list[dict[str, Any]] = []
+    rejected_examples: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        reasons: list[str] = []
+        if medium_enabled:
+            dg_types = _candidate_format_carriers_v8(candidate)
+            generic_dvd_is_ambiguous = (
+                ("DVD" in dg_types and bool(medium_types & {"DVD-AUDIO", "DVD-VIDEO"}))
+                or ("DVD" in medium_types and bool(dg_types & {"DVD-AUDIO", "DVD-VIDEO"}))
+            )
+            if dg_types and not (dg_types & medium_types) and not generic_dvd_is_ambiguous:
+                counts["medium"] += 1
+                reasons.append("MEDIUM_MISMATCH")
+        if year_enabled:
+            dg_year = _year_from_value(candidate.get("version_year") or candidate.get("released") or candidate.get("year"))
+            if dg_year is not None and dg_year != mb_year:
+                counts["year"] += 1
+                reasons.append("YEAR_MISMATCH")
+        if country_enabled:
+            dg_country = str(candidate.get("version_country") or candidate.get("country") or "").strip()
+            if dg_country:
+                country_status, _mb_display, _dg_display, _detail = compare_release_countries(mb_release, {"country": dg_country})
+                if country_status == "MISMATCH":
+                    counts["country"] += 1
+                    reasons.append("COUNTRY_MISMATCH")
+        if reasons:
+            if len(rejected_examples) < 20:
+                rejected_examples.append({"release_id": str(candidate.get("id") or ""), "reasons": ";".join(reasons)})
+        else:
+            kept.append(candidate)
+    summary = {
+        "fields_checked": fields_checked,
+        "candidates_before": len(candidates),
+        "candidates_after": len(kept),
+        "candidates_removed": len(candidates) - len(kept),
+        "removed_by": counts,
+        "rejected_examples": rejected_examples,
+        "policy": "Only definite contradictions are removed; missing or ambiguous Discogs summary fields are retained for full V6 verification.",
+    }
+    return kept, summary
+
+
+def load_stage1_snapshot(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with path.open("r", encoding="utf-8-sig") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Stage 1 JSONL is invalid at line {line_number}: {exc}") from exc
+            if not isinstance(row, dict):
+                raise RuntimeError(f"Stage 1 JSONL line {line_number} is not an object")
+            mbid = str(row.get("mbid") or "").strip().lower()
+            barcode = norm_barcode(row.get("barcode"))
+            mb = row.get("mb_release")
+            if row.get("status") != "READY_FOR_DISCOGS" or not mbid or not barcode or not isinstance(mb, dict):
+                raise RuntimeError(f"Stage 1 JSONL line {line_number} is not a valid READY_FOR_DISCOGS snapshot")
+            if mbid in seen:
+                raise RuntimeError(f"Stage 1 JSONL contains duplicate MBID {mbid}")
+            if str(mb.get("id") or "").strip().lower() != mbid:
+                raise RuntimeError(f"Stage 1 snapshot MBID mismatch at line {line_number}: {mbid}")
+            if norm_barcode(mb.get("barcode")) != barcode:
+                raise RuntimeError(f"Stage 1 snapshot barcode mismatch for MBID {mbid}")
+            seen.add(mbid)
+            rows.append(row)
+    if not rows:
+        raise RuntimeError("Stage 1 snapshot contains no READY_FOR_DISCOGS rows")
+    rows.sort(key=lambda r: int(r.get("report_position") or 0))
+    return rows
+
+
+def load_stage2_progress(path: Path) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    if not path.is_file():
+        return records
+    lines = path.read_text(encoding="utf-8").splitlines()
+    valid: list[str] = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            valid.append(line)
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            if number == len(lines):
+                path.write_text("\n".join(valid) + ("\n" if valid else ""), encoding="utf-8", newline="\n")
+                break
+            raise RuntimeError(f"Stage 2 progress has invalid JSON at line {number}")
+        valid.append(line)
+        mbid = str(row.get("mbid") or "").strip().lower()
+        if mbid:
+            records[mbid] = row
+    return records
+
+
+def append_stage2_progress(stream, group: dict[str, Any], count: int) -> None:
+    stream.write(json.dumps(group, ensure_ascii=False, separators=(",", ":")) + "\n")
+    stream.flush()
+    if count % 25 == 0:
+        os.fsync(stream.fileno())
+
+
+def build_candidate_row(mbid: str, barcode: str, candidate: dict[str, Any], index: int, total: int, pages: int) -> dict[str, str]:
+    rid = str(candidate.get("id") or "").strip()
+    title = str(candidate.get("title") or "").strip()
+    return {
+        "mbid": mbid,
+        "barcode": barcode,
+        "discogs_url": f"https://www.discogs.com/release/{rid}",
+        "discogs_release_id": rid,
+        "discogs_display_name": title,
+        "search_result_index": str(index),
+        "search_total_results": str(total),
+        "search_pages": str(pages),
+        "candidate_source": str(candidate.get("candidate_source") or ""),
+        "master_id": str(candidate.get("master_id") or ""),
+        "version_year": str(candidate.get("version_year") or ""),
+        "version_country": str(candidate.get("version_country") or ""),
+        "version_format": str(candidate.get("version_format") or ""),
+    }
+
+
+def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], source: Path,
+                         input_count: int, blacklist_count: int) -> tuple[Path, Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    groups = sorted(progress.values(), key=lambda g: int(g.get("report_position") or 0))
+    result_rows: list[dict[str, str]] = []
+    for group in groups:
+        for result in group.get("results") or []:
+            if isinstance(result, dict):
+                result_rows.append({str(k): str(v or "") for k, v in result.items()})
+    report_path = out_dir / "stage2_verification_report.tsv"
+    fields: list[str] = []
+    for row in result_rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    if not fields:
+        fields = ["mbid", "barcode", "discogs_url", "discogs_release_id", "status", "reason"]
+    with report_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(result_rows)
+    group_counts = Counter(str(g.get("status") or "UNKNOWN") for g in groups)
+    result_counts = Counter(str(r.get("status") or "UNKNOWN") for r in result_rows)
+
+    # results.txt is a compact hand-off file containing unambiguous MBID +
+    # Discogs URL pairs. V6 AUTO_CANDIDATE means a candidate passed verification
+    # and is eligible for approval; it does NOT itself select a winner. Therefore
+    # write a pair only when exactly one candidate for that MBID is AUTO_CANDIDATE.
+    # If multiple candidates pass, do not arbitrarily choose one: leave that MBID
+    # out of results.txt and keep all alternatives in the detailed TSV report.
+    qualified_pairs: list[tuple[str, str]] = []
+    ambiguous_auto_mbids = 0
+    for group in groups:
+        mbid = str(group.get("mbid") or "").strip().lower()
+        if not mbid:
+            continue
+        auto_candidates = [
+            result for result in (group.get("results") or [])
+            if isinstance(result, dict)
+            and str(result.get("status") or "") == "AUTO_CANDIDATE"
+            and str(result.get("discogs_url") or "").strip()
+        ]
+        if len(auto_candidates) == 1:
+            qualified_pairs.append((mbid, str(auto_candidates[0]["discogs_url"]).strip()))
+        elif len(auto_candidates) > 1:
+            ambiguous_auto_mbids += 1
+    results_path = out_dir / "results.txt"
+    with results_path.open("w", encoding="utf-8", newline="\n") as stream:
+        for mbid, discogs_url in qualified_pairs:
+            stream.write(f"{mbid}\t{discogs_url}\n")
+
+    summary_path = out_dir / "stage2_summary.txt"
+    with summary_path.open("w", encoding="utf-8-sig") as stream:
+        stream.write("DISCOGS LINK BOT V8 — PHASE 2: DISCOGS SEARCH + V6 VERIFICATION\n")
+        stream.write("=" * 72 + "\n")
+        stream.write(f"Input snapshot: {source}\nInput MBIDs: {input_count:,}\nMBIDs with progress: {len(groups):,}\nBlacklist MBIDs: {blacklist_count:,}\nCandidate result rows: {len(result_rows):,}\nUnique MBID + Discogs URL pairs in results.txt (exactly one AUTO_CANDIDATE): {len(qualified_pairs):,}\nMBIDs with multiple AUTO_CANDIDATE options (not selected): {ambiguous_auto_mbids:,}\n")
+        stream.write("\nMBID SEARCH GROUP COUNTS\n")
+        for status, count in sorted(group_counts.items()):
+            stream.write(f"{status}: {count:,}\n")
+        stream.write("\nFINAL V6 CANDIDATE STATUS COUNTS\n")
+        for status, count in sorted(result_counts.items()):
+            stream.write(f"{status}: {count:,}\n")
+        stream.write("\nV6 verification rules and conservative normalizations are retained. Only candidates surviving the V7 conservative medium/year/country summary prefilter receive full Discogs release verification. Missing/ambiguous summary metadata is retained for full verification.\n")
+        stream.write("No MusicBrainz edits were submitted. Phase 2 uses the embedded Phase 1 MusicBrainz snapshot and does not query MusicBrainz Web Service.\n")
+    return report_path, summary_path, results_path
+
+
+def format_eta(seconds: float) -> str:
+    """Format a remaining duration for the live Phase 2 progress display."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def format_phase2_progress(done_equivalent: float, total: int, elapsed: float) -> str:
+    """Return overall MBID progress, live throughput, and a remaining-time estimate.
+
+    While a group's candidate releases are being checked, its completed fraction
+    contributes to done_equivalent so ETA updates during long groups as well.
+    """
+    if total <= 0 or done_equivalent <= 0:
+        return f"[Progress: 0/{total:,} MBID | ETA: calculating]"
+    elapsed = max(elapsed, 0.001)
+    done_equivalent = min(float(total), max(0.0, done_equivalent))
+    speed = done_equivalent / elapsed
+    remaining = max(0.0, total - done_equivalent)
+    eta_seconds = remaining / speed if speed > 0 else 0.0
+    return (
+        f"[Progress: {done_equivalent:,.2f}/{total:,} MBID | "
+        f"{speed:.2f} MBID/s | ETA: {format_eta(eta_seconds)}]"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="V8 Phase 2: Discogs barcode search, master expansion, then full V6 verification using the Phase 1 MusicBrainz snapshot.")
+    parser.add_argument("input", nargs="?", default="discogs_barcode_builder_v8_output/stage1_musicbrainz_v8.jsonl", help="Phase 1 JSONL snapshot")
+    parser.add_argument("--discogs-delay", type=float, default=1.1, help="Minimum seconds between Discogs API request starts (minimum 1.0; default 1.1)")
+    parser.add_argument("--limit", type=int, default=0, help="Verify first N MBID groups (0 = all)")
+    parser.add_argument("--out-dir", default=None, help="Phase 2 reports folder (default: beside this script: discogs_bot_verify_v8_output)")
+    parser.add_argument("--cache-dir", default="discogs_bot_verify_v8_cache/discogs_api")
+    parser.add_argument("--progress", default="discogs_bot_verify_v8_progress.jsonl")
+    parser.add_argument("--report-checkpoint", type=int, default=100, help="Rewrite partial TSV report every N completed MBID groups (default: 100)")
+    parser.add_argument("--user-agent", default=os.environ.get("DISCOGS_USER_AGENT", DEFAULT_DISCOGS_USER_AGENT))
+    parser.add_argument("--reset", action="store_true", help="Reset Phase 2 progress/state; preserve Discogs API cache")
+    args = parser.parse_args()
     token = os.environ.get("DISCOGS_TOKEN", "").strip()
     if not token:
-        print("ERROR: DISCOGS_TOKEN environment variable is not set. No requests or edits were made.", file=sys.stderr)
-        print("PowerShell example: $env:DISCOGS_TOKEN = \"YOUR_TOKEN\"", file=sys.stderr)
-        return 2
+        try:
+            token = prompt_masked_token()
+        except KeyboardInterrupt:
+            print("\nCancelled. No requests or edits were made.", file=sys.stderr)
+            return 130
+        if not token:
+            print("ERROR: Discogs token is empty. No requests or edits were made.", file=sys.stderr)
+            return 2
+    if args.discogs_delay < 1.0:
+        parser.error("--discogs-delay must be at least 1.0 second")
+    if args.limit < 0 or args.report_checkpoint < 1:
+        parser.error("--limit must be non-negative and --report-checkpoint at least 1")
+
     source = Path(args.input).expanduser().resolve()
     if not source.is_file():
-        print(f"ERROR: candidate input not found: {source}", file=sys.stderr)
+        print(f"ERROR: Phase 1 snapshot not found: {source}", file=sys.stderr)
         return 2
-    if args.discogs_delay < 1.0:
-        print("ERROR: --discogs-delay must be at least 1.0 second to avoid aggressive Discogs API access.", file=sys.stderr)
-        return 2
-
-    out_dir = Path(args.out_dir).expanduser().resolve()
+    script_dir = Path(__file__).resolve().parent
+    out_dir = (Path(args.out_dir).expanduser().resolve() if args.out_dir
+               else script_dir / "discogs_bot_verify_v8_output")
     cache_root = Path(args.cache_dir).expanduser().resolve()
-    cache_mb = JsonCache(cache_root / "musicbrainz_labels_catno_v4")
-    cache_dg = JsonCache(cache_root / "discogs")
+    progress_path = Path(args.progress).expanduser().resolve()
+    state_path = progress_path.with_suffix(progress_path.suffix + ".state.json")
     try:
-        input_rows = load_input(source)
-        if args.limit > 0:
-            input_rows = input_rows[:args.limit]
-        print(f"Candidates to verify: {len(input_rows)}")
-        print(f"Local MusicBrainz mirror: {args.mb_base_url}")
+        input_rows = load_stage1_snapshot(source)
+    except Exception as exc:
+        print(f"ERROR loading Phase 1 snapshot: {exc}", file=sys.stderr)
+        return 2
+    if args.limit:
+        input_rows = input_rows[:args.limit]
+    signature = {"path": str(source), "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns}
+    if args.reset:
+        progress_path.unlink(missing_ok=True)
+        state_path.unlink(missing_ok=True)
+    if progress_path.exists() and not state_path.exists():
+        print("ERROR: Phase 2 progress exists but its state file is missing. Use --reset or a new --progress path.", file=sys.stderr)
+        return 2
+    if state_path.exists():
+        try:
+            old_signature = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            print(f"ERROR: cannot read Phase 2 state: {state_path}", file=sys.stderr)
+            return 2
+        if old_signature != signature:
+            print("ERROR: Phase 2 progress belongs to a different snapshot. Use --reset or a new --progress path.", file=sys.stderr)
+            return 2
+    else:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(signature, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    progress = load_stage2_progress(progress_path)
+    done = {m for m, g in progress.items() if str(g.get("status") or "").startswith("DONE_")}
+    remaining = [r for r in input_rows if str(r.get("mbid") or "").lower() not in done]
+    cache_dg = JsonCache(cache_root)
+    last_dg_request = [0.0]
+
+    print("=" * 72)
+    print("DISCOGS LINK BOT V8 — PHASE 2: DISCOGS API + V6 VERIFICATION")
+    print("=" * 72)
+    print(f"Phase 1 snapshot: {source}\nMBID groups selected: {len(input_rows):,}\nAlready completed: {len(done):,}\nRemaining: {len(remaining):,}")
+    print(f"Discogs minimum interval: {args.discogs_delay:.2f}s | API cache: {cache_root}")
+    print(f"Phase 2 output folder: {out_dir}")
+    print("MusicBrainz Web Service: NOT USED — full MB release data comes from Phase 1 snapshot")
+    print("Discogs: all barcode search pages; multiple hits expand every linked master version")
+    print("V7 conservative summary prefilter + full V6 release identity verification")
+    print("Read-only. No MusicBrainz edits.\n")
+
+    try:
         print("Fetching official MusicBrainz Discogs-link blacklist...", flush=True)
         blacklist = fetch_blacklist_mbids()
-        print(f"Blacklist release MBIDs loaded: {len(blacklist)}", flush=True)
+        print(f"Blacklist release MBIDs loaded: {len(blacklist):,}", flush=True)
+        # Create the separate Phase 2 output folder and its partial TSV immediately,
+        # rather than waiting for the first report checkpoint (previously 250 groups).
+        report_path, summary_path, results_path = write_stage2_outputs(
+            out_dir, progress, source, len(input_rows), len(blacklist)
+        )
+        print(f"Initial partial TSV: {report_path}", flush=True)
+        print(f"Qualified MBID list: {results_path}", flush=True)
     except Exception as exc:
-        print(f"ERROR: startup check failed: {exc}", file=sys.stderr)
+        print(f"ERROR: startup blacklist check failed: {exc}", file=sys.stderr)
         return 2
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    results: list[dict[str, str]] = []
-    counts: Counter[str] = Counter()
-    last_dg_request = [0.0]
-    mb_host = (urllib.parse.urlparse(args.mb_base_url).hostname or "").casefold()
-    mb_delay = 1.1 if mb_host not in {"localhost", "127.0.0.1", "::1"} else 0.05
-
-    fatal_error = False
-    for index, row in enumerate(input_rows, start=1):
-        mbid = str(row.get("mbid") or "").strip()
-        release_id = str(row.get("discogs_release_id") or "").strip()
-        result: dict[str, str]
-        try:
-            if not mbid or not release_id:
-                raise RuntimeError("Input row is missing MBID or Discogs release ID")
-            try:
-                mb = fetch_mb_release(mbid, args.mb_base_url, cache_mb)
-            except HTTPStatusError as exc:
-                if exc.status == 404:
-                    result = {**row, "status": "REJECT_MB_RELEASE_NOT_FOUND", "reason": "LOCAL_MUSICBRAINZ_API_RETURNED_404"}
-                else:
-                    raise
-            else:
+    started = time.monotonic()
+    processed = 0
+    fatal = False
+    counts = Counter()
+    print(format_phase2_progress(0, len(remaining), 0), flush=True)
+    try:
+        with progress_path.open("a", encoding="utf-8", newline="\n") as progress_stream:
+            for snapshot in remaining:
+                mbid = str(snapshot["mbid"]).lower()
+                barcode = norm_barcode(snapshot["barcode"])
+                mb = snapshot["mb_release"]
+                group: dict[str, Any] = {
+                    "mbid": mbid,
+                    "report_position": int(snapshot.get("report_position") or 0),
+                    "barcode": barcode,
+                    "status": "ERROR",
+                    "reason": "UNCLASSIFIED_ERROR",
+                    "results": [],
+                }
                 try:
-                    dg = fetch_discogs_release(release_id, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request)
-                except HTTPStatusError as exc:
-                    if exc.status == 404:
-                        result = {**row, "status": "REJECT_DISCOGS_NOT_FOUND", "reason": "DISCOGS_API_RETURNED_404", "mb_title": str(mb.get("title") or ""), "mb_artist": mb_artist_credit(mb), "mb_barcode": norm_barcode(mb.get("barcode")), "discogs_api_title": "", "discogs_api_artist": "", "discogs_api_barcodes": "", "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb))}
+                    total_items, total_pages, search_results = fetch_all_discogs_results_v8(
+                        barcode, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request
+                    )
+                    group.update(search_total_results=total_items, search_pages=total_pages, search_release_rows=len(search_results))
+                    if total_items == 0:
+                        group.update(status="DONE_NO_DISCOGS_RESULTS", reason="ZERO_DISCOGS_RESULTS")
                     else:
-                        raise
-                else:
-                    result = evaluate(row, mb, dg, blacklist)
-        except Exception as exc:
-            message = str(exc).replace("\t", " ").replace("\n", " ")[:500]
-            # A bad token should stop the run immediately, not repeatedly hit the API.
-            if message.startswith("Access denied (HTTP 401)") or message.startswith("Access denied (HTTP 403)"):
-                print(f"FATAL: {message}", file=sys.stderr)
-                fatal_error = True
-                break
-            # Fail closed: the row is never deemed safe after an exception.
-            result = {**row, "status": "ERROR_FETCH_OR_PARSE", "reason": message}
-        results.append(result)
-        counts[result.get("status", "UNKNOWN")] += 1
-        if index % 100 == 0 or index == len(input_rows):
-            print(f"[{index}/{len(input_rows)}] AUTO_CANDIDATE={counts['AUTO_CANDIDATE']} "
-                  f"MANUAL={sum(v for k,v in counts.items() if k.startswith('MANUAL_'))} "
-                  f"REJECT={sum(v for k,v in counts.items() if k.startswith('REJECT_'))} "
-                  f"BLOCKED={counts['BLOCKED_BLACKLIST']} ALREADY_LINKED={counts['ALREADY_LINKED']} "
-                  f"ERROR={sum(v for k,v in counts.items() if k.startswith('ERROR_'))}", flush=True)
-        if fatal_error:
-            break
+                        def load_versions(master_id: str) -> list[dict[str, Any]]:
+                            _count, _pages, versions = fetch_all_master_versions_v8(
+                                master_id, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request
+                            )
+                            return versions
 
-    report_path = out_dir / "stage2_verification_report.tsv"
-    write_report(report_path, results)
-    with (out_dir / "stage2_summary.txt").open("w", encoding="utf-8-sig") as f:
-        f.write("DISCOGS LINK BOT — STAGE 2 V5 VERIFICATION (READ-ONLY)\n")
-        f.write("=" * 53 + "\n")
-        f.write(f"Input: {source}\nRows processed: {len(results)}\nBlacklist MBIDs: {len(blacklist)}\n")
-        for status, count in sorted(counts.items()):
-            f.write(f"{status}: {count}\n")
-        f.write("\nAUTO_CANDIDATE means eligible for a separate review/approval stage only. v5 uses conservative normalization and evaluates all available fields before status assignment.\n")
-        f.write("No MusicBrainz edits were submitted by this program.\n")
-        if fatal_error:
-            f.write("FATAL: run stopped because Discogs authorization was denied.\n")
-    print(f"\nReport saved: {report_path}")
-    print(f"Summary saved: {out_dir / 'stage2_summary.txt'}")
-    print("No edits were submitted to MusicBrainz.")
-    return 2 if fatal_error else 0
+                        candidates, expanded_master_ids, expanded_version_rows = expand_candidates_for_master_results_v8(
+                            total_items, search_results, load_versions
+                        )
+                        candidates_before_filter = len(candidates)
+                        if candidates_before_filter == 0:
+                            raise RuntimeError("Discogs reports barcode search results but no valid release candidates were built")
+                        if total_items == 1 and candidates_before_filter != 1:
+                            raise RuntimeError("Discogs reports one direct search result but candidate construction did not return exactly one release")
+                        candidates, identity_filter = prefilter_candidates_by_mb_identity_v8(candidates, mb)
+                        if not candidates:
+                            group.update(
+                                status="DONE_NO_IDENTITY_MATCH",
+                                reason="ALL_CANDIDATES_DEFINITIVELY_CONTRADICT_AVAILABLE_MB_IDENTITY_FIELDS",
+                                candidate_count_before_identity_filter=candidates_before_filter,
+                                candidate_count=0,
+                                expanded_master_ids=expanded_master_ids,
+                                expanded_version_rows=expanded_version_rows,
+                                identity_filter=identity_filter,
+                            )
+                        else:
+                            candidate_results: list[dict[str, str]] = []
+                            for index, candidate in enumerate(candidates, 1):
+                                row = build_candidate_row(mbid, barcode, candidate, index, total_items, total_pages)
+                                rid = str(candidate.get("id") or "").strip()
+                                try:
+                                    dg = fetch_discogs_release(rid, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request)
+                                except HTTPStatusError as exc:
+                                    if exc.status == 404:
+                                        result = {
+                                            **row,
+                                            "status": "REJECT_DISCOGS_NOT_FOUND",
+                                            "reason": "DISCOGS_API_RETURNED_404",
+                                            "mb_title": str(mb.get("title") or ""),
+                                            "mb_artist": mb_artist_credit(mb),
+                                            "mb_barcode": norm_barcode(mb.get("barcode")),
+                                            "discogs_api_title": "",
+                                            "discogs_api_artist": "",
+                                            "discogs_api_barcodes": "",
+                                            "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb)),
+                                        }
+                                    else:
+                                        raise
+                                else:
+                                    result = evaluate(row, mb, dg, blacklist)
+                                candidate_results.append(result)
+                                if index == 1 or index % 25 == 0 or index == len(candidates):
+                                    elapsed = time.monotonic() - started
+                                    group_fraction = index / max(len(candidates), 1)
+                                    live_progress = format_phase2_progress(
+                                        processed + group_fraction, len(remaining), elapsed
+                                    )
+                                    print(
+                                        f"{live_progress} MBID {mbid}: full Discogs release checks "
+                                        f"{index:,}/{len(candidates):,}",
+                                        flush=True,
+                                    )
+                            group.update(
+                                status="DONE_WITH_RESULTS",
+                                reason="DISCOGS_SEARCH_AND_V6_VERIFICATION_COMPLETED",
+                                results=candidate_results,
+                                candidate_count_before_identity_filter=candidates_before_filter,
+                                candidate_count=len(candidates),
+                                expanded_master_ids=expanded_master_ids,
+                                expanded_version_rows=expanded_version_rows,
+                                identity_filter=identity_filter,
+                            )
+                    if total_items == 1 and total_pages < 1:
+                        raise RuntimeError("Discogs pagination reported a single result but no pages")
+                except HTTPStatusError as exc:
+                    message = f"HTTP_{exc.status}: {exc.body[:200]}"
+                    group.update(status="ERROR", reason=message)
+                    if exc.status in (401, 403):
+                        fatal = True
+                        print(f"FATAL: Discogs API authorization denied (HTTP {exc.status}); stopping.", file=sys.stderr)
+                except Exception as exc:
+                    message = str(exc).replace("\t", " ").replace("\r", " ").replace("\n", " ")[:500]
+                    group.update(status="ERROR", reason=message)
+                    if message.startswith("Access denied (HTTP 401)") or message.startswith("Access denied (HTTP 403)"):
+                        fatal = True
+                        print(f"FATAL: {message}; stopping to avoid repeated unauthorized requests.", file=sys.stderr)
+
+                processed += 1
+                append_stage2_progress(progress_stream, group, processed)
+                progress[mbid] = group
+                counts[group["status"]] += 1
+                if processed <= 5 or processed % 25 == 0 or processed == len(remaining):
+                    elapsed = time.monotonic() - started
+                    live_progress = format_phase2_progress(processed, len(remaining), elapsed)
+                    done_rows = sum(len(g.get("results") or []) for g in progress.values())
+                    print(
+                        f"{live_progress} candidates_verified={done_rows:,} "
+                        f"groups_done={sum(1 for g in progress.values() if str(g.get('status','')).startswith('DONE_')):,} "
+                        f"errors={sum(1 for g in progress.values() if g.get('status') == 'ERROR'):,}",
+                        flush=True,
+                    )
+                if processed % args.report_checkpoint == 0:
+                    report_path, summary_path, results_path = write_stage2_outputs(out_dir, progress, source, len(input_rows), len(blacklist))
+                if fatal:
+                    break
+    except KeyboardInterrupt:
+        print("\nInterrupted. Phase 2 progress and Discogs cache are preserved; rerun to resume.", flush=True)
+        fatal = True
+
+    report_path, summary_path, results_path = write_stage2_outputs(out_dir, progress, source, len(input_rows), len(blacklist))
+    print("\n" + "=" * 72)
+    print("V8 PHASE 2 FINISHED" if not fatal else "V8 PHASE 2 STOPPED — PROGRESS PRESERVED")
+    print("=" * 72)
+    print(f"MBID groups completed: {sum(1 for g in progress.values() if str(g.get('status','')).startswith('DONE_')):,}")
+    print(f"Candidate report: {report_path}\nQualified MBID list: {results_path}\nSummary: {summary_path}")
+    print("No MusicBrainz Web Service calls in Phase 2. No MusicBrainz edits.")
+    return 2 if fatal or any(g.get("status") == "ERROR" for g in progress.values()) else 0
 
 
 if __name__ == "__main__":
