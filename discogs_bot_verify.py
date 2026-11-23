@@ -2,9 +2,10 @@
 r"""Discogs Link Bot V8 — Phase 2: Discogs discovery + full V6 verification.
 
 Input is the JSONL snapshot produced by discogs_barcode_builder.py.
-Phase 2 searches Discogs by each MusicBrainz barcode, fetches every search
-page, expands all associated master versions when the initial search has
-multiple results, and then applies the unchanged V6 release identity checks.
+Phase 2 reads the total Discogs barcode-search count first. If the total is
+1–100, it verifies every direct barcode-search release using the full V6
+release identity checks. If the total exceeds 100, the MBID is skipped.
+Discogs master-version expansion is not used.
 
 The full MusicBrainz release response is embedded in the Phase 1 snapshot;
 Phase 2 does NOT query the local MusicBrainz Web Service again.
@@ -15,18 +16,19 @@ Requirements:
 - Internet access to Discogs API and MusicBrainz blacklist page
 - Discogs personal API token: DISCOGS_TOKEN environment variable or masked prompt
 
-Run a small pilot first (if DISCOGS_TOKEN is not set, the script prompts
-for it with masked input; typed/pasted characters are shown as asterisks):
-  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl --limit 20
+Start with a fresh Phase 1 snapshot, then run a small Phase 2 pilot:
+  py .\discogs_barcode_builder.py .\report.txt
+  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl --limit 20
 
 Then process the full Phase 1 snapshot:
-  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_output\stage1_musicbrainz_v8.jsonl
+  py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl
 
 No fuzzy matching is used. The original V6 conservative normalizations and
 metadata checks are retained: artist, title, barcode, medium format and count,
 release year, release country, labels, catalog numbers, existing links and the
 official Discogs-link blacklist. Missing/ambiguous Discogs summary fields are
-kept for complete V6 API verification. Network/API failures fail closed.
+checked by the complete V6 verifier. More than 100 barcode hits are skipped.
+Network/API failures fail closed.
 """
 
 from __future__ import annotations
@@ -100,6 +102,19 @@ class HTTPStatusError(RuntimeError):
         self.status = status
         self.url = url
         self.body = body
+
+
+class TooManyDiscogsResults(RuntimeError):
+    """Intentional skip when a barcode search is too broad."""
+
+    def __init__(self, total_items: int, total_pages: int, first_page_rows: int) -> None:
+        super().__init__(
+            f"Discogs barcode search returned {total_items} results "
+            f"(limit {MAX_BARCODE_SEARCH_RESULTS_V8_1})"
+        )
+        self.total_items = total_items
+        self.total_pages = total_pages
+        self.first_page_rows = first_page_rows
 
 
 class AnchorCollector(html.parser.HTMLParser):
@@ -1299,8 +1314,9 @@ def write_report(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 
-# ----------------------- V8 Phase 2: Discogs discovery ----------------------
+# ----------------------- V8.1 Phase 2: Discogs discovery ----------------------
 PER_PAGE_V8 = 100
+MAX_BARCODE_SEARCH_RESULTS_V8_1 = 100
 
 
 def _discogs_cache_key(value: str) -> str:
@@ -1351,179 +1367,68 @@ def _pagination_counts_v8(data: dict[str, Any], context: str) -> tuple[int, int]
 
 def fetch_all_discogs_results_v8(barcode: str, token: str, user_agent: str, delay: float,
                                  cache: JsonCache, last_request: list[float]) -> tuple[int, int, list[dict[str, Any]]]:
+    """Read the Discogs total count and keep only the first page when within the cap.
+
+    pagination.items is the total number of direct barcode hits. If it is above
+    100, the caller records a skip after this one request. We do not fetch later
+    search pages, master versions or release details for that MBID.
+    """
     first = fetch_discogs_search_page_v8(barcode, 1, token, user_agent, delay, cache, last_request)
     total_items, total_pages = _pagination_counts_v8(first, "Discogs barcode search")
-    all_results: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    rows = first.get("results")
+    if not isinstance(rows, list):
+        raise RuntimeError("Discogs search response has no results list")
 
-    def add_page(data: dict[str, Any]) -> None:
-        rows = data.get("results")
-        if not isinstance(rows, list):
-            raise RuntimeError("Discogs search response has no results list")
-        for item in rows:
-            if not isinstance(item, dict) or str(item.get("type") or "").casefold() != "release":
-                continue
-            rid = str(item.get("id") or "").strip()
-            if rid.isdigit() and rid not in seen:
-                seen.add(rid)
-                all_results.append(item)
+    if total_items > MAX_BARCODE_SEARCH_RESULTS_V8_1:
+        raise TooManyDiscogsResults(total_items, total_pages, len(rows))
+    if total_items > 0 and total_pages > 1:
+        raise RuntimeError(
+            "Discogs pagination is inconsistent: at most 100 results were reported "
+            f"but the API claims {total_pages} pages"
+        )
 
-    if total_pages:
-        add_page(first)
-    for page in range(2, total_pages + 1):
-        add_page(fetch_discogs_search_page_v8(barcode, page, token, user_agent, delay, cache, last_request))
-    if total_items and not all_results:
-        raise RuntimeError("Discogs reports search results but returned no valid release rows")
-    return total_items, total_pages, all_results
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in rows:
+        if not isinstance(item, dict) or str(item.get("type") or "").casefold() != "release":
+            continue
+        release_id = str(item.get("id") or "").strip()
+        if release_id.isdigit() and release_id not in seen_ids:
+            seen_ids.add(release_id)
+            results.append(item)
 
-
-def fetch_master_versions_page_v8(master_id: str, page: int, token: str, user_agent: str,
-                                  delay: float, cache: JsonCache, last_request: list[float]) -> dict[str, Any]:
-    params = urllib.parse.urlencode({"per_page": PER_PAGE_V8, "page": page})
-    url = f"https://api.discogs.com/masters/{urllib.parse.quote(master_id)}/versions?{params}"
-    cache_key = f"master_versions|master_id={master_id}|per_page={PER_PAGE_V8}|page={page}"
-    return fetch_discogs_json_v8(url, cache_key, token, user_agent, delay, cache, last_request)
+    if total_items and not results:
+        raise RuntimeError("Discogs reports barcode results but returned no valid direct release rows")
+    return total_items, total_pages, results
 
 
-def fetch_all_master_versions_v8(master_id: str, token: str, user_agent: str, delay: float,
-                                 cache: JsonCache, last_request: list[float]) -> tuple[int, int, list[dict[str, Any]]]:
-    first = fetch_master_versions_page_v8(master_id, 1, token, user_agent, delay, cache, last_request)
-    total_items, total_pages = _pagination_counts_v8(first, f"Discogs master {master_id} versions")
-    versions: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def add_page(data: dict[str, Any]) -> None:
-        rows = data.get("versions")
-        if not isinstance(rows, list):
-            raise RuntimeError(f"Discogs master {master_id} response has no versions list")
-        for item in rows:
-            if not isinstance(item, dict):
-                continue
-            rid = str(item.get("id") or "").strip()
-            if rid.isdigit() and rid not in seen:
-                seen.add(rid)
-                versions.append(item)
-
-    if total_pages:
-        add_page(first)
-    for page in range(2, total_pages + 1):
-        add_page(fetch_master_versions_page_v8(master_id, page, token, user_agent, delay, cache, last_request))
-    if total_items and not versions:
-        raise RuntimeError(f"Discogs master {master_id} reports versions but returned no valid release IDs")
-    return total_items, total_pages, versions
-
-
-def expand_candidates_for_master_results_v8(search_total: int, search_results: list[dict[str, Any]],
-                                            load_versions) -> tuple[list[dict[str, Any]], list[str], int]:
+def build_direct_candidates_v8(search_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Create candidates only from unique direct Discogs barcode-search hits."""
     candidates: list[dict[str, Any]] = []
     seen_release_ids: set[str] = set()
-
-    def add_candidate(item: dict[str, Any], source: str, master_id: str = "") -> None:
-        rid = str(item.get("id") or "").strip()
-        if not rid.isdigit() or rid in seen_release_ids:
-            return
-        seen_release_ids.add(rid)
+    for item in search_results:
+        if not isinstance(item, dict):
+            continue
+        release_id = str(item.get("id") or "").strip()
+        if not release_id.isdigit() or release_id in seen_release_ids:
+            continue
+        seen_release_ids.add(release_id)
         raw_format = item.get("format", [])
-        fmt = "; ".join(str(v) for v in raw_format if v) if isinstance(raw_format, list) else str(raw_format or "").strip()
+        fmt = (
+            "; ".join(str(value) for value in raw_format if value)
+            if isinstance(raw_format, list)
+            else str(raw_format or "").strip()
+        )
         candidates.append({
-            "id": rid,
+            "id": release_id,
             "title": str(item.get("title") or "").strip(),
-            "candidate_source": source,
-            "master_id": master_id or str(item.get("master_id") or "").strip(),
-            "version_year": str(item.get("released") or item.get("year") or "").strip(),
+            "candidate_source": "BARCODE_SEARCH",
+            "master_id": str(item.get("master_id") or "").strip(),
+            "version_year": str(item.get("year") or item.get("released") or "").strip(),
             "version_country": str(item.get("country") or "").strip(),
             "version_format": fmt,
         })
-
-    # Preserve every direct barcode search result.
-    for item in search_results:
-        if isinstance(item, dict):
-            add_candidate(item, "BARCODE_SEARCH")
-
-    expanded_master_ids: list[str] = []
-    expanded_version_rows = 0
-    # Exactly as V7: only multiple direct search hits trigger expansion of masters.
-    if search_total > 1:
-        master_ids: list[str] = []
-        seen_master_ids: set[str] = set()
-        for item in search_results:
-            if not isinstance(item, dict):
-                continue
-            mid = str(item.get("master_id") or "").strip()
-            if mid.isdigit() and mid != "0" and mid not in seen_master_ids:
-                seen_master_ids.add(mid)
-                master_ids.append(mid)
-        for mid in master_ids:
-            versions = load_versions(mid)
-            expanded_master_ids.append(mid)
-            expanded_version_rows += len(versions)
-            for item in versions:
-                if isinstance(item, dict):
-                    add_candidate(item, "MASTER_VERSION", mid)
-    return candidates, expanded_master_ids, expanded_version_rows
-
-
-def _candidate_format_carriers_v8(candidate: dict[str, Any]) -> set[str]:
-    raw = candidate.get("version_format") or candidate.get("format") or []
-    if isinstance(raw, list):
-        values = [str(v).strip() for v in raw if str(v).strip()]
-    else:
-        values = [p.strip() for p in re.split(r"[;,]", str(raw).strip()) if p.strip()]
-    return {canonical for value in values if (canonical := normalize_media_format(value))}
-
-
-def prefilter_candidates_by_mb_identity_v8(candidates: list[dict[str, Any]], mb_release: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """V7 conservative prefilter: remove only definite medium/year/country contradictions."""
-    mb_medium_counts, _mb_raw, mb_medium_unknown = _format_counts_from_musicbrainz(mb_release)
-    medium_types = set(mb_medium_counts)
-    medium_enabled = bool(medium_types) and not mb_medium_unknown
-    mb_year, mb_year_issue = extract_musicbrainz_year(mb_release)
-    year_enabled = mb_year is not None and not mb_year_issue
-    mb_country_codes, mb_country_issue = _mb_country_codes(mb_release)
-    country_enabled = len(mb_country_codes) == 1 and not mb_country_issue
-    fields_checked = [name for name, enabled in (("medium", medium_enabled), ("year", year_enabled), ("country", country_enabled)) if enabled]
-    counts = {"medium": 0, "year": 0, "country": 0}
-    kept: list[dict[str, Any]] = []
-    rejected_examples: list[dict[str, str]] = []
-
-    for candidate in candidates:
-        reasons: list[str] = []
-        if medium_enabled:
-            dg_types = _candidate_format_carriers_v8(candidate)
-            generic_dvd_is_ambiguous = (
-                ("DVD" in dg_types and bool(medium_types & {"DVD-AUDIO", "DVD-VIDEO"}))
-                or ("DVD" in medium_types and bool(dg_types & {"DVD-AUDIO", "DVD-VIDEO"}))
-            )
-            if dg_types and not (dg_types & medium_types) and not generic_dvd_is_ambiguous:
-                counts["medium"] += 1
-                reasons.append("MEDIUM_MISMATCH")
-        if year_enabled:
-            dg_year = _year_from_value(candidate.get("version_year") or candidate.get("released") or candidate.get("year"))
-            if dg_year is not None and dg_year != mb_year:
-                counts["year"] += 1
-                reasons.append("YEAR_MISMATCH")
-        if country_enabled:
-            dg_country = str(candidate.get("version_country") or candidate.get("country") or "").strip()
-            if dg_country:
-                country_status, _mb_display, _dg_display, _detail = compare_release_countries(mb_release, {"country": dg_country})
-                if country_status == "MISMATCH":
-                    counts["country"] += 1
-                    reasons.append("COUNTRY_MISMATCH")
-        if reasons:
-            if len(rejected_examples) < 20:
-                rejected_examples.append({"release_id": str(candidate.get("id") or ""), "reasons": ";".join(reasons)})
-        else:
-            kept.append(candidate)
-    summary = {
-        "fields_checked": fields_checked,
-        "candidates_before": len(candidates),
-        "candidates_after": len(kept),
-        "candidates_removed": len(candidates) - len(kept),
-        "removed_by": counts,
-        "rejected_examples": rejected_examples,
-        "policy": "Only definite contradictions are removed; missing or ambiguous Discogs summary fields are retained for full V6 verification.",
-    }
-    return kept, summary
+    return candidates
 
 
 def load_stage1_snapshot(path: Path) -> list[dict[str, Any]]:
@@ -1615,6 +1520,18 @@ def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], sou
     groups = sorted(progress.values(), key=lambda g: int(g.get("report_position") or 0))
     result_rows: list[dict[str, str]] = []
     for group in groups:
+        if str(group.get("status") or "") == "SKIPPED_TOO_MANY_RESULTS":
+            result_rows.append({
+                "mbid": str(group.get("mbid") or ""),
+                "barcode": str(group.get("barcode") or ""),
+                "discogs_url": "",
+                "discogs_release_id": "",
+                "search_total_results": str(group.get("search_total_results") or ""),
+                "search_pages": str(group.get("search_pages") or ""),
+                "status": "SKIPPED_TOO_MANY_RESULTS",
+                "reason": str(group.get("reason") or ""),
+                "candidate_count": "0",
+            })
         for result in group.get("results") or []:
             if isinstance(result, dict):
                 result_rows.append({str(k): str(v or "") for k, v in result.items()})
@@ -1662,16 +1579,16 @@ def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], sou
 
     summary_path = out_dir / "stage2_summary.txt"
     with summary_path.open("w", encoding="utf-8-sig") as stream:
-        stream.write("DISCOGS LINK BOT V8 — PHASE 2: DISCOGS SEARCH + V6 VERIFICATION\n")
+        stream.write("DISCOGS LINK BOT V8.1 — PHASE 2: DISCOGS SEARCH + V6 VERIFICATION\n")
         stream.write("=" * 72 + "\n")
         stream.write(f"Input snapshot: {source}\nInput MBIDs: {input_count:,}\nMBIDs with progress: {len(groups):,}\nBlacklist MBIDs: {blacklist_count:,}\nCandidate result rows: {len(result_rows):,}\nUnique MBID + Discogs URL pairs in results.txt (exactly one AUTO_CANDIDATE): {len(qualified_pairs):,}\nMBIDs with multiple AUTO_CANDIDATE options (not selected): {ambiguous_auto_mbids:,}\n")
         stream.write("\nMBID SEARCH GROUP COUNTS\n")
         for status, count in sorted(group_counts.items()):
             stream.write(f"{status}: {count:,}\n")
-        stream.write("\nFINAL V6 CANDIDATE STATUS COUNTS\n")
+        stream.write("\nFINAL CANDIDATE / SKIP STATUS COUNTS\n")
         for status, count in sorted(result_counts.items()):
             stream.write(f"{status}: {count:,}\n")
-        stream.write("\nV6 verification rules and conservative normalizations are retained. Only candidates surviving the V7 conservative medium/year/country summary prefilter receive full Discogs release verification. Missing/ambiguous summary metadata is retained for full verification.\n")
+        stream.write("\nV6 verification rules and conservative normalizations are retained. All direct barcode-search releases are fully verified when the total search count is at most 100. MBIDs with more than 100 results are recorded as SKIPPED_TOO_MANY_RESULTS. Master-version expansion and preliminary summary prefiltering are disabled.\n")
         stream.write("No MusicBrainz edits were submitted. Phase 2 uses the embedded Phase 1 MusicBrainz snapshot and does not query MusicBrainz Web Service.\n")
     return report_path, summary_path, results_path
 
@@ -1708,13 +1625,13 @@ def format_phase2_progress(done_equivalent: float, total: int, elapsed: float) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="V8 Phase 2: Discogs barcode search, master expansion, then full V6 verification using the Phase 1 MusicBrainz snapshot.")
-    parser.add_argument("input", nargs="?", default="discogs_barcode_builder_v8_output/stage1_musicbrainz_v8.jsonl", help="Phase 1 JSONL snapshot")
+    parser = argparse.ArgumentParser(description="V8.1 Phase 2: Discogs barcode search, master expansion, then full V6 verification using the Phase 1 MusicBrainz snapshot.")
+    parser.add_argument("input", nargs="?", default="discogs_barcode_builder_v8_1_output/stage1_musicbrainz_v8_1.jsonl", help="Phase 1 JSONL snapshot")
     parser.add_argument("--discogs-delay", type=float, default=1.1, help="Minimum seconds between Discogs API request starts (minimum 1.0; default 1.1)")
     parser.add_argument("--limit", type=int, default=0, help="Verify first N MBID groups (0 = all)")
-    parser.add_argument("--out-dir", default=None, help="Phase 2 reports folder (default: beside this script: discogs_bot_verify_v8_output)")
-    parser.add_argument("--cache-dir", default="discogs_bot_verify_v8_cache/discogs_api")
-    parser.add_argument("--progress", default="discogs_bot_verify_v8_progress.jsonl")
+    parser.add_argument("--out-dir", default=None, help="Phase 2 reports folder (default: beside this script: discogs_bot_verify_v8_1_output)")
+    parser.add_argument("--cache-dir", default="discogs_bot_verify_v8_1_cache/discogs_api")
+    parser.add_argument("--progress", default="discogs_bot_verify_v8_1_progress.jsonl")
     parser.add_argument("--report-checkpoint", type=int, default=100, help="Rewrite partial TSV report every N completed MBID groups (default: 100)")
     parser.add_argument("--user-agent", default=os.environ.get("DISCOGS_USER_AGENT", DEFAULT_DISCOGS_USER_AGENT))
     parser.add_argument("--reset", action="store_true", help="Reset Phase 2 progress/state; preserve Discogs API cache")
@@ -1740,7 +1657,7 @@ def main() -> int:
         return 2
     script_dir = Path(__file__).resolve().parent
     out_dir = (Path(args.out_dir).expanduser().resolve() if args.out_dir
-               else script_dir / "discogs_bot_verify_v8_output")
+               else script_dir / "discogs_bot_verify_v8_1_output")
     cache_root = Path(args.cache_dir).expanduser().resolve()
     progress_path = Path(args.progress).expanduser().resolve()
     state_path = progress_path.with_suffix(progress_path.suffix + ".state.json")
@@ -1751,7 +1668,7 @@ def main() -> int:
         return 2
     if args.limit:
         input_rows = input_rows[:args.limit]
-    signature = {"path": str(source), "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns}
+    signature = {"path": str(source), "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns, "pipeline_policy": "direct-barcode-max-100-full-v6-no-master-expansion-v1"}
     if args.reset:
         progress_path.unlink(missing_ok=True)
         state_path.unlink(missing_ok=True)
@@ -1772,20 +1689,20 @@ def main() -> int:
         state_path.write_text(json.dumps(signature, ensure_ascii=False, indent=2), encoding="utf-8")
 
     progress = load_stage2_progress(progress_path)
-    done = {m for m, g in progress.items() if str(g.get("status") or "").startswith("DONE_")}
+    done = {m for m, g in progress.items() if str(g.get("status") or "").startswith(("DONE_", "SKIPPED_"))}
     remaining = [r for r in input_rows if str(r.get("mbid") or "").lower() not in done]
     cache_dg = JsonCache(cache_root)
     last_dg_request = [0.0]
 
     print("=" * 72)
-    print("DISCOGS LINK BOT V8 — PHASE 2: DISCOGS API + V6 VERIFICATION")
+    print("DISCOGS LINK BOT V8.1 — PHASE 2: DISCOGS API + V6 VERIFICATION")
     print("=" * 72)
     print(f"Phase 1 snapshot: {source}\nMBID groups selected: {len(input_rows):,}\nAlready completed: {len(done):,}\nRemaining: {len(remaining):,}")
     print(f"Discogs minimum interval: {args.discogs_delay:.2f}s | API cache: {cache_root}")
     print(f"Phase 2 output folder: {out_dir}")
     print("MusicBrainz Web Service: NOT USED — full MB release data comes from Phase 1 snapshot")
-    print("Discogs: all barcode search pages; multiple hits expand every linked master version")
-    print("V7 conservative summary prefilter + full V6 release identity verification")
+    print(f"Discogs barcode limit: {MAX_BARCODE_SEARCH_RESULTS_V8_1} total results per MBID. Master-version expansion: DISABLED.")
+    print("All direct barcode hits under the limit receive full V6 release identity verification.")
     print("Read-only. No MusicBrainz edits.\n")
 
     try:
@@ -1830,80 +1747,74 @@ def main() -> int:
                     if total_items == 0:
                         group.update(status="DONE_NO_DISCOGS_RESULTS", reason="ZERO_DISCOGS_RESULTS")
                     else:
-                        def load_versions(master_id: str) -> list[dict[str, Any]]:
-                            _count, _pages, versions = fetch_all_master_versions_v8(
-                                master_id, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request
-                            )
-                            return versions
-
-                        candidates, expanded_master_ids, expanded_version_rows = expand_candidates_for_master_results_v8(
-                            total_items, search_results, load_versions
-                        )
+                        candidates = build_direct_candidates_v8(search_results)
                         candidates_before_filter = len(candidates)
-                        if candidates_before_filter == 0:
-                            raise RuntimeError("Discogs reports barcode search results but no valid release candidates were built")
-                        if total_items == 1 and candidates_before_filter != 1:
-                            raise RuntimeError("Discogs reports one direct search result but candidate construction did not return exactly one release")
-                        candidates, identity_filter = prefilter_candidates_by_mb_identity_v8(candidates, mb)
                         if not candidates:
-                            group.update(
-                                status="DONE_NO_IDENTITY_MATCH",
-                                reason="ALL_CANDIDATES_DEFINITIVELY_CONTRADICT_AVAILABLE_MB_IDENTITY_FIELDS",
-                                candidate_count_before_identity_filter=candidates_before_filter,
-                                candidate_count=0,
-                                expanded_master_ids=expanded_master_ids,
-                                expanded_version_rows=expanded_version_rows,
-                                identity_filter=identity_filter,
+                            raise RuntimeError(
+                                "Discogs reports barcode results but no valid direct release candidates were built"
                             )
-                        else:
-                            candidate_results: list[dict[str, str]] = []
-                            for index, candidate in enumerate(candidates, 1):
-                                row = build_candidate_row(mbid, barcode, candidate, index, total_items, total_pages)
-                                rid = str(candidate.get("id") or "").strip()
-                                try:
-                                    dg = fetch_discogs_release(rid, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request)
-                                except HTTPStatusError as exc:
-                                    if exc.status == 404:
-                                        result = {
-                                            **row,
-                                            "status": "REJECT_DISCOGS_NOT_FOUND",
-                                            "reason": "DISCOGS_API_RETURNED_404",
-                                            "mb_title": str(mb.get("title") or ""),
-                                            "mb_artist": mb_artist_credit(mb),
-                                            "mb_barcode": norm_barcode(mb.get("barcode")),
-                                            "discogs_api_title": "",
-                                            "discogs_api_artist": "",
-                                            "discogs_api_barcodes": "",
-                                            "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb)),
-                                        }
-                                    else:
-                                        raise
+
+                        candidate_results: list[dict[str, str]] = []
+                        for index, candidate in enumerate(candidates, 1):
+                            row = build_candidate_row(mbid, barcode, candidate, index, total_items, total_pages)
+                            rid = str(candidate.get("id") or "").strip()
+                            try:
+                                dg = fetch_discogs_release(
+                                    rid, token, args.user_agent, args.discogs_delay, cache_dg, last_dg_request
+                                )
+                            except HTTPStatusError as exc:
+                                if exc.status == 404:
+                                    result = {
+                                        **row,
+                                        "status": "REJECT_DISCOGS_NOT_FOUND",
+                                        "reason": "DISCOGS_API_RETURNED_404",
+                                        "mb_title": str(mb.get("title") or ""),
+                                        "mb_artist": mb_artist_credit(mb),
+                                        "mb_barcode": norm_barcode(mb.get("barcode")),
+                                        "discogs_api_title": "",
+                                        "discogs_api_artist": "",
+                                        "discogs_api_barcodes": "",
+                                        "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb)),
+                                    }
                                 else:
-                                    result = evaluate(row, mb, dg, blacklist)
-                                candidate_results.append(result)
-                                if index == 1 or index % 25 == 0 or index == len(candidates):
-                                    elapsed = time.monotonic() - started
-                                    group_fraction = index / max(len(candidates), 1)
-                                    live_progress = format_phase2_progress(
-                                        processed + group_fraction, len(remaining), elapsed
-                                    )
-                                    print(
-                                        f"{live_progress} MBID {mbid}: full Discogs release checks "
-                                        f"{index:,}/{len(candidates):,}",
-                                        flush=True,
-                                    )
-                            group.update(
-                                status="DONE_WITH_RESULTS",
-                                reason="DISCOGS_SEARCH_AND_V6_VERIFICATION_COMPLETED",
-                                results=candidate_results,
-                                candidate_count_before_identity_filter=candidates_before_filter,
-                                candidate_count=len(candidates),
-                                expanded_master_ids=expanded_master_ids,
-                                expanded_version_rows=expanded_version_rows,
-                                identity_filter=identity_filter,
-                            )
+                                    raise
+                            else:
+                                result = evaluate(row, mb, dg, blacklist)
+                            candidate_results.append(result)
+                            if index == 1 or index % 25 == 0 or index == len(candidates):
+                                elapsed = time.monotonic() - started
+                                group_fraction = index / max(len(candidates), 1)
+                                live_progress = format_phase2_progress(
+                                    processed + group_fraction, len(remaining), elapsed
+                                )
+                                print(
+                                    f"{live_progress} MBID {mbid}: full Discogs release checks "
+                                    f"{index:,}/{len(candidates):,}",
+                                    flush=True,
+                                )
+                        group.update(
+                            status="DONE_WITH_RESULTS",
+                            reason="DIRECT_BARCODE_SEARCH_AND_FULL_V6_VERIFICATION_COMPLETED",
+                            results=candidate_results,
+                            candidate_count_before_filter=candidates_before_filter,
+                            candidate_count=len(candidates),
+                        )
                     if total_items == 1 and total_pages < 1:
                         raise RuntimeError("Discogs pagination reported a single result but no pages")
+                except TooManyDiscogsResults as exc:
+                    group.update(
+                        status="SKIPPED_TOO_MANY_RESULTS",
+                        reason=f"BARCODE_SEARCH_RETURNED_{exc.total_items}_RESULTS_LIMIT_{MAX_BARCODE_SEARCH_RESULTS_V8_1}",
+                        search_total_results=exc.total_items,
+                        search_pages=exc.total_pages,
+                        search_release_rows=exc.first_page_rows,
+                        candidate_count=0,
+                    )
+                    print(
+                        f"  SKIP MBID {mbid}: Discogs barcode search returned {exc.total_items:,} "
+                        f"results (limit {MAX_BARCODE_SEARCH_RESULTS_V8_1:,}); no release details requested.",
+                        flush=True,
+                    )
                 except HTTPStatusError as exc:
                     message = f"HTTP_{exc.status}: {exc.body[:200]}"
                     group.update(status="ERROR", reason=message)
@@ -1927,7 +1838,7 @@ def main() -> int:
                     done_rows = sum(len(g.get("results") or []) for g in progress.values())
                     print(
                         f"{live_progress} candidates_verified={done_rows:,} "
-                        f"groups_done={sum(1 for g in progress.values() if str(g.get('status','')).startswith('DONE_')):,} "
+                        f"groups_done={sum(1 for g in progress.values() if str(g.get('status','')).startswith(('DONE_', 'SKIPPED_'))):,} "
                         f"errors={sum(1 for g in progress.values() if g.get('status') == 'ERROR'):,}",
                         flush=True,
                     )
@@ -1941,9 +1852,9 @@ def main() -> int:
 
     report_path, summary_path, results_path = write_stage2_outputs(out_dir, progress, source, len(input_rows), len(blacklist))
     print("\n" + "=" * 72)
-    print("V8 PHASE 2 FINISHED" if not fatal else "V8 PHASE 2 STOPPED — PROGRESS PRESERVED")
+    print("V8.1 PHASE 2 FINISHED" if not fatal else "V8.1 PHASE 2 STOPPED — PROGRESS PRESERVED")
     print("=" * 72)
-    print(f"MBID groups completed: {sum(1 for g in progress.values() if str(g.get('status','')).startswith('DONE_')):,}")
+    print(f"MBID groups completed or skipped: {sum(1 for g in progress.values() if str(g.get('status','')).startswith(('DONE_', 'SKIPPED_'))):,}")
     print(f"Candidate report: {report_path}\nQualified MBID list: {results_path}\nSummary: {summary_path}")
     print("No MusicBrainz Web Service calls in Phase 2. No MusicBrainz edits.")
     return 2 if fatal or any(g.get("status") == "ERROR" for g in progress.values()) else 0

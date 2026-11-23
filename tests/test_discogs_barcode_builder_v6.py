@@ -1,4 +1,4 @@
-"""Offline tests for the V8 Phase 2 Discogs discovery and progress helpers."""
+"""V8.1 tests for the direct Discogs barcode-result limit."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -7,113 +7,86 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "discogs_bot_verify.py"
-SPEC = importlib.util.spec_from_file_location("discogs_bot_verify_v8", SCRIPT)
+SPEC = importlib.util.spec_from_file_location("discogs_bot_verify_v8_1", SCRIPT)
 VERIFY = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(VERIFY)
 
 
-class MasterVersionExpansionTests(unittest.TestCase):
-    def test_single_search_result_is_not_expanded(self):
-        calls = []
-        def load_versions(master_id):
-            calls.append(master_id)
-            return [{"id": 200, "title": "Other pressing"}]
-        candidates, master_ids, version_rows = VERIFY.expand_candidates_for_master_results_v8(
-            1, [{"id": 100, "title": "Single result", "master_id": 10}], load_versions
-        )
-        self.assertEqual([r["id"] for r in candidates], ["100"])
-        self.assertEqual(master_ids, [])
-        self.assertEqual(version_rows, 0)
-        self.assertEqual(calls, [])
-
-    def test_multiple_results_expand_all_distinct_master_versions(self):
-        calls = []
-        def load_versions(master_id):
-            calls.append(master_id)
-            if master_id == "10":
-                return [
-                    {"id": 100, "title": "Direct duplicate"},
-                    {"id": 101, "title": "Version B", "released": "2001", "country": "UK", "format": ["CD", "Album"]},
-                ]
-            if master_id == "20":
-                return [{"id": 202, "title": "Version C"}]
-            raise AssertionError(master_id)
-        search_rows = [
-            {"id": 100, "title": "Search A", "master_id": 10},
-            {"id": 200, "title": "Search B", "master_id": 10},
-            {"id": 201, "title": "Search C", "master_id": 20},
-            {"id": 300, "title": "No master"},
+def search_response(total, pages, rows=None):
+    if rows is None:
+        rows = [
+            {
+                "id": index, "type": "release", "title": f"Direct release {index}",
+                "master_id": 5000, "year": "2003", "country": "UK", "format": ["CD", "Album"],
+            }
+            for index in range(1, min(total, 100) + 1)
         ]
-        candidates, master_ids, version_rows = VERIFY.expand_candidates_for_master_results_v8(4, search_rows, load_versions)
-        self.assertEqual(calls, ["10", "20"])
-        self.assertEqual(master_ids, ["10", "20"])
-        self.assertEqual(version_rows, 3)
-        self.assertEqual([r["id"] for r in candidates], ["100", "200", "201", "300", "101", "202"])
-        self.assertEqual(candidates[0]["candidate_source"], "BARCODE_SEARCH")
-        self.assertEqual(candidates[4]["candidate_source"], "MASTER_VERSION")
-        self.assertEqual(candidates[4]["version_year"], "2001")
-        self.assertEqual(candidates[4]["version_country"], "UK")
-        self.assertEqual(candidates[4]["version_format"], "CD; Album")
-
-    def test_duplicate_master_ids_are_fetched_once_and_duplicate_release_ids_removed(self):
-        calls = []
-        def load_versions(master_id):
-            calls.append(master_id)
-            return [{"id": 999, "title": "Version"}]
-        rows = [{"id": 1, "master_id": "55"}, {"id": 2, "master_id": "55"}, {"id": 3, "master_id": "0"}]
-        candidates, master_ids, _ = VERIFY.expand_candidates_for_master_results_v8(3, rows, load_versions)
-        self.assertEqual(calls, ["55"])
-        self.assertEqual(master_ids, ["55"])
-        self.assertEqual([r["id"] for r in candidates], ["1", "2", "3", "999"])
+    return {"pagination": {"items": total, "pages": pages}, "results": rows}
 
 
-class DiscogsPaginationTests(unittest.TestCase):
-    def test_barcode_search_fetches_every_page(self):
-        seen = []
+class DirectBarcodeLimitTests(unittest.TestCase):
+    def run_search(self, total, pages):
+        seen_pages = []
         def fake(url, headers=None, timeout=45):
             page = int(parse_qs(urlparse(url).query)["page"][0])
-            seen.append(page)
-            if page == 1:
-                return {"pagination": {"items": 101, "pages": 2}, "results": [
-                    {"id": i, "type": "release", "title": f"Release {i}"} for i in range(1, 101)
-                ]}, {}
-            return {"pagination": {"items": 101, "pages": 2}, "results": [
-                {"id": 101, "type": "release", "title": "Release 101"}
-            ]}, {}
+            seen_pages.append(page)
+            return search_response(total, pages), {}
         with tempfile.TemporaryDirectory() as folder:
             cache = VERIFY.JsonCache(Path(folder))
             with patch.object(VERIFY, "http_get_json", side_effect=fake):
-                total, pages, results = VERIFY.fetch_all_discogs_results_v8(
-                    "012345678905", "token", "test-agent", 0.0, cache, [0.0]
-                )
-        self.assertEqual((total, pages), (101, 2))
-        self.assertEqual(seen, [1, 2])
-        self.assertEqual(len(results), 101)
-        self.assertEqual(results[-1]["id"], 101)
+                result = None
+                error = None
+                try:
+                    result = VERIFY.fetch_all_discogs_results_v8(
+                        "4893391073526", "test-token", "test-agent", 0.0, cache, [0.0]
+                    )
+                except VERIFY.TooManyDiscogsResults as exc:
+                    error = exc
+        return result, error, seen_pages
 
-    def test_master_versions_fetches_every_view_all_page(self):
-        seen = []
-        def fake(url, headers=None, timeout=45):
-            page = int(parse_qs(urlparse(url).query)["page"][0])
-            seen.append(page)
-            if page == 1:
-                return {"pagination": {"items": 101, "pages": 2}, "versions": [
-                    {"id": i, "title": f"Version {i}"} for i in range(1, 101)
-                ]}, {}
-            return {"pagination": {"items": 101, "pages": 2}, "versions": [
-                {"id": 101, "title": "Version 101"}
-            ]}, {}
-        with tempfile.TemporaryDirectory() as folder:
-            cache = VERIFY.JsonCache(Path(folder))
-            with patch.object(VERIFY, "http_get_json", side_effect=fake):
-                total, pages, versions = VERIFY.fetch_all_master_versions_v8(
-                    "42473", "token", "test-agent", 0.0, cache, [0.0]
-                )
-        self.assertEqual((total, pages), (101, 2))
-        self.assertEqual(seen, [1, 2])
-        self.assertEqual(len(versions), 101)
-        self.assertEqual(versions[-1]["id"], 101)
+    def test_48_results_are_all_direct_candidates(self):
+        result, error, pages = self.run_search(48, 1)
+        self.assertIsNone(error)
+        self.assertEqual(pages, [1])
+        total, page_count, rows = result
+        candidates = VERIFY.build_direct_candidates_v8(rows)
+        self.assertEqual((total, page_count), (48, 1))
+        self.assertEqual(len(candidates), 48)
+        self.assertTrue(all(row["candidate_source"] == "BARCODE_SEARCH" for row in candidates))
+        self.assertTrue(all(row["master_id"] == "5000" for row in candidates))
+        self.assertFalse(any(row["candidate_source"] == "MASTER_VERSION" for row in candidates))
+
+    def test_exactly_100_results_are_allowed(self):
+        result, error, pages = self.run_search(100, 1)
+        self.assertIsNone(error)
+        self.assertEqual(pages, [1])
+        self.assertEqual(len(result[2]), 100)
+
+    def test_101_results_skip_without_fetching_page_two(self):
+        result, error, pages = self.run_search(101, 2)
+        self.assertIsNone(result)
+        self.assertIsNotNone(error)
+        self.assertEqual(error.total_items, 101)
+        self.assertEqual(error.total_pages, 2)
+        self.assertEqual(pages, [1])
+
+    def test_2117_results_skip_without_fetching_more_pages(self):
+        result, error, pages = self.run_search(2117, 22)
+        self.assertIsNone(result)
+        self.assertIsNotNone(error)
+        self.assertEqual(error.total_items, 2117)
+        self.assertEqual(error.total_pages, 22)
+        self.assertEqual(pages, [1])
+
+    def test_duplicate_direct_release_ids_are_removed(self):
+        rows = [
+            {"id": 10, "type": "release", "title": "First"},
+            {"id": 10, "type": "release", "title": "Duplicate"},
+            {"id": 11, "type": "release", "title": "Second"},
+        ]
+        candidates = VERIFY.build_direct_candidates_v8(rows)
+        self.assertEqual([row["id"] for row in candidates], ["10", "11"])
 
 
 class ProgressRecoveryTests(unittest.TestCase):
