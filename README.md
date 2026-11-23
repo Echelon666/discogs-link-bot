@@ -18,14 +18,14 @@ No other Python modules or third-party packages are required. Python 3.10 or new
 
 1. Create a new folder for Discogs Link Bot.
 2. Copy the two `.py` files into that folder.
-3. Put your Album Hunter report in the same folder and name it `report.txt` (or pass its path in the command).
+3. Put your Album Hunter report in the same folder and name it `report.txt`. Phase 1 uses this default filename automatically.
 4. Make sure your local MusicBrainz mirror is running. The default Web Service address is `http://localhost:5000`.
 5. Open PowerShell in the new folder.
 
 ### Phase 1 — MusicBrainz only
 
 ```powershell
-py .\discogs_barcode_builder.py .\report.txt
+py discogs_barcode_builder.py
 ```
 
 Phase 1 reads unique release MBIDs from `-> ALBUM:` rows inside `POSSIBILITIES` sections. It queries only the local MusicBrainz Web Service; it does not contact Discogs and does not need a Discogs token.
@@ -40,15 +40,15 @@ It writes a full MusicBrainz JSONL snapshot for Phase 2 and a compact TSV index.
 Useful pilot:
 
 ```powershell
-py .\discogs_barcode_builder.py .\report.txt --limit 50
+
 ```
 
 ### Phase 2 — Discogs and full V6 verification
 
-After Phase 1 finishes, run:
+After Phase 1 finishes, run the command below. Phase 2 automatically reads the default JSONL snapshot created by Phase 1:
 
 ```powershell
-py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl
+py discogs_bot_verify.py
 ```
 
 When `DISCOGS_TOKEN` is not set in the environment, the script prompts for it. On Windows, typed or pasted characters are displayed as asterisks. The token is not written to progress, cache or report files.
@@ -72,7 +72,7 @@ The default minimum interval between Discogs API request starts is 1.1 seconds. 
 Pilot:
 
 ```powershell
-py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl --limit 50
+
 ```
 
 ## Files created automatically
@@ -113,14 +113,7 @@ The progress JSONL is updated after each completed MBID group. The TSV, summary 
 
 After Ctrl+C, rerun the same Phase 2 command. Completed and skipped MBIDs are not repeated, and cached API responses are reused.
 
-To intentionally start a phase again from zero, use its `--reset` option:
-
-```powershell
-py .\discogs_barcode_builder.py .\report.txt --reset
-py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl --reset
-```
-
-Reset removes that phase's progress and state files but preserves its API cache. Delete the relevant cache folder manually only when you explicitly want to discard cached responses too.
+To intentionally start a phase again from zero, add the optional `--reset` switch to that phase's command. Reset removes that phase's progress and state files but preserves its API cache. Delete the relevant cache folder manually only when you explicitly want to discard cached responses too.
 
 ## Matching and safety notes
 
