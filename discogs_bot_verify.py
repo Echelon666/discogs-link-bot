@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-r"""Discogs Link Bot V8 — Phase 2: Discogs discovery + full V6 verification.
+r"""Discogs Link Bot V8.2 — Artist Guard — Phase 2: Discogs discovery + full V6 verification.
 
 Input is the JSONL snapshot produced by discogs_barcode_builder.py.
 Phase 2 reads the total Discogs barcode-search count first. If the total is
 1–100, it verifies every direct barcode-search release using the full V6
-release identity checks. If the total exceeds 100, the MBID is skipped.
+release identity checks. If the total exceeds 100, the MBID is skipped. For 1–100 results, the script first checks
+all Discogs primary-artist IDs. It skips the MBID if more than one distinct artist ID
+is present, then applies full V6 verification only when exactly one artist is found.
 Discogs master-version expansion is not used.
 
 The full MusicBrainz release response is embedded in the Phase 1 snapshot;
@@ -22,6 +24,8 @@ Start with a fresh Phase 1 snapshot, then run a small Phase 2 pilot:
 
 Then process the full Phase 1 snapshot:
   py .\discogs_bot_verify.py .\discogs_barcode_builder_v8_1_output\stage1_musicbrainz_v8_1.jsonl
+
+This is a complete standalone Python script. Git and GitHub access are not needed to run this standalone script. Internet access is still needed for the Discogs API and the MusicBrainz blacklist page.
 
 No fuzzy matching is used. The original V6 conservative normalizations and
 metadata checks are retained: artist, title, barcode, medium format and count,
@@ -110,7 +114,7 @@ class TooManyDiscogsResults(RuntimeError):
     def __init__(self, total_items: int, total_pages: int, first_page_rows: int) -> None:
         super().__init__(
             f"Discogs barcode search returned {total_items} results "
-            f"(limit {MAX_BARCODE_SEARCH_RESULTS_V8_1})"
+            f"(limit {MAX_BARCODE_SEARCH_RESULTS_V8_2})"
         )
         self.total_items = total_items
         self.total_pages = total_pages
@@ -1314,9 +1318,9 @@ def write_report(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 
-# ----------------------- V8.1 Phase 2: Discogs discovery ----------------------
+# ----------------------- V8.2 Phase 2: Discogs discovery ----------------------
 PER_PAGE_V8 = 100
-MAX_BARCODE_SEARCH_RESULTS_V8_1 = 100
+MAX_BARCODE_SEARCH_RESULTS_V8_2 = 100
 
 
 def _discogs_cache_key(value: str) -> str:
@@ -1379,7 +1383,7 @@ def fetch_all_discogs_results_v8(barcode: str, token: str, user_agent: str, dela
     if not isinstance(rows, list):
         raise RuntimeError("Discogs search response has no results list")
 
-    if total_items > MAX_BARCODE_SEARCH_RESULTS_V8_1:
+    if total_items > MAX_BARCODE_SEARCH_RESULTS_V8_2:
         raise TooManyDiscogsResults(total_items, total_pages, len(rows))
     if total_items > 0 and total_pages > 1:
         raise RuntimeError(
@@ -1514,13 +1518,49 @@ def build_candidate_row(mbid: str, barcode: str, candidate: dict[str, Any], inde
     }
 
 
+class DiscogsArtistIdentityError(RuntimeError):
+    """Raised when primary artist identity cannot be verified."""
+
+
+def discogs_primary_artist_ids(release: dict[str, Any]) -> dict[str, str]:
+    """Return Discogs primary artist IDs and names from a full release response.
+
+    Release-level Discogs artists are the credited primary artists. Numeric
+    Discogs Artist IDs are used instead of names because names/ANVs can vary
+    while the underlying artist identity remains the same. Every entry must
+    have a valid ID; missing or malformed identity data fails closed.
+    """
+    artists = release.get("artists")
+    if not isinstance(artists, list) or not artists:
+        raise DiscogsArtistIdentityError("DISCOGS_RELEASE_HAS_NO_PRIMARY_ARTISTS")
+
+    found: dict[str, str] = {}
+    for item in artists:
+        if not isinstance(item, dict):
+            raise DiscogsArtistIdentityError("DISCOGS_RELEASE_HAS_MALFORMED_PRIMARY_ARTIST_ENTRY")
+        artist_id = str(item.get("id") or "").strip()
+        artist_name = str(item.get("name") or "").strip()
+        if not artist_id.isdigit():
+            raise DiscogsArtistIdentityError("DISCOGS_RELEASE_PRIMARY_ARTIST_ID_MISSING_OR_INVALID")
+        found[artist_id] = artist_name or f"Artist ID {artist_id}"
+
+    if not found:
+        raise DiscogsArtistIdentityError("DISCOGS_RELEASE_HAS_NO_VERIFIABLE_PRIMARY_ARTIST_IDS")
+    return found
+
+
 def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], source: Path,
                          input_count: int, blacklist_count: int) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     groups = sorted(progress.values(), key=lambda g: int(g.get("report_position") or 0))
     result_rows: list[dict[str, str]] = []
     for group in groups:
-        if str(group.get("status") or "") == "SKIPPED_TOO_MANY_RESULTS":
+        group_status = str(group.get("status") or "")
+        if group_status in {
+            "SKIPPED_TOO_MANY_RESULTS",
+            "SKIPPED_MULTIPLE_ARTISTS",
+            "SKIPPED_ARTIST_UNVERIFIABLE",
+        }:
             result_rows.append({
                 "mbid": str(group.get("mbid") or ""),
                 "barcode": str(group.get("barcode") or ""),
@@ -1528,9 +1568,13 @@ def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], sou
                 "discogs_release_id": "",
                 "search_total_results": str(group.get("search_total_results") or ""),
                 "search_pages": str(group.get("search_pages") or ""),
-                "status": "SKIPPED_TOO_MANY_RESULTS",
+                "status": group_status,
                 "reason": str(group.get("reason") or ""),
-                "candidate_count": "0",
+                "candidate_count": str(group.get("candidate_count") or "0"),
+                "candidate_count_checked": str(group.get("candidate_count_checked") or ""),
+                "artist_count": str(group.get("artist_count") or ""),
+                "discogs_artist_ids": str(group.get("discogs_artist_ids") or ""),
+                "discogs_artists": str(group.get("discogs_artists") or ""),
             })
         for result in group.get("results") or []:
             if isinstance(result, dict):
@@ -1579,7 +1623,7 @@ def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], sou
 
     summary_path = out_dir / "stage2_summary.txt"
     with summary_path.open("w", encoding="utf-8-sig") as stream:
-        stream.write("DISCOGS LINK BOT V8.1 — PHASE 2: DISCOGS SEARCH + V6 VERIFICATION\n")
+        stream.write("DISCOGS LINK BOT V8.2 — PHASE 2: ARTIST GUARD + V6 VERIFICATION\n")
         stream.write("=" * 72 + "\n")
         stream.write(f"Input snapshot: {source}\nInput MBIDs: {input_count:,}\nMBIDs with progress: {len(groups):,}\nBlacklist MBIDs: {blacklist_count:,}\nCandidate result rows: {len(result_rows):,}\nUnique MBID + Discogs URL pairs in results.txt (exactly one AUTO_CANDIDATE): {len(qualified_pairs):,}\nMBIDs with multiple AUTO_CANDIDATE options (not selected): {ambiguous_auto_mbids:,}\n")
         stream.write("\nMBID SEARCH GROUP COUNTS\n")
@@ -1588,7 +1632,7 @@ def write_stage2_outputs(out_dir: Path, progress: dict[str, dict[str, Any]], sou
         stream.write("\nFINAL CANDIDATE / SKIP STATUS COUNTS\n")
         for status, count in sorted(result_counts.items()):
             stream.write(f"{status}: {count:,}\n")
-        stream.write("\nV6 verification rules and conservative normalizations are retained. All direct barcode-search releases are fully verified when the total search count is at most 100. MBIDs with more than 100 results are recorded as SKIPPED_TOO_MANY_RESULTS. Master-version expansion and preliminary summary prefiltering are disabled.\n")
+        stream.write("\nV6 verification rules and conservative normalizations are retained. Direct barcode results are limited to 100. Before V6 verification, all direct releases must resolve to exactly one distinct Discogs primary Artist ID; multiple IDs are recorded as SKIPPED_MULTIPLE_ARTISTS, and missing/unverifiable artist identity is recorded as SKIPPED_ARTIST_UNVERIFIABLE. Master-version expansion and preliminary summary prefiltering are disabled.\n")
         stream.write("No MusicBrainz edits were submitted. Phase 2 uses the embedded Phase 1 MusicBrainz snapshot and does not query MusicBrainz Web Service.\n")
     return report_path, summary_path, results_path
 
@@ -1625,13 +1669,13 @@ def format_phase2_progress(done_equivalent: float, total: int, elapsed: float) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="V8.1 Phase 2: Discogs barcode search, master expansion, then full V6 verification using the Phase 1 MusicBrainz snapshot.")
+    parser = argparse.ArgumentParser(description="V8.2 Artist Guard: direct barcode search, one-primary-artist gate, then full V6 verification.")
     parser.add_argument("input", nargs="?", default="discogs_barcode_builder_v8_1_output/stage1_musicbrainz_v8_1.jsonl", help="Phase 1 JSONL snapshot")
     parser.add_argument("--discogs-delay", type=float, default=1.1, help="Minimum seconds between Discogs API request starts (minimum 1.0; default 1.1)")
     parser.add_argument("--limit", type=int, default=0, help="Verify first N MBID groups (0 = all)")
-    parser.add_argument("--out-dir", default=None, help="Phase 2 reports folder (default: beside this script: discogs_bot_verify_v8_1_output)")
-    parser.add_argument("--cache-dir", default="discogs_bot_verify_v8_1_cache/discogs_api")
-    parser.add_argument("--progress", default="discogs_bot_verify_v8_1_progress.jsonl")
+    parser.add_argument("--out-dir", default=None, help="Phase 2 reports folder (default: beside this script: discogs_bot_verify_v8_2_output)")
+    parser.add_argument("--cache-dir", default="discogs_bot_verify_v8_2_cache/discogs_api")
+    parser.add_argument("--progress", default="discogs_bot_verify_v8_2_progress.jsonl")
     parser.add_argument("--report-checkpoint", type=int, default=100, help="Rewrite partial TSV report every N completed MBID groups (default: 100)")
     parser.add_argument("--user-agent", default=os.environ.get("DISCOGS_USER_AGENT", DEFAULT_DISCOGS_USER_AGENT))
     parser.add_argument("--reset", action="store_true", help="Reset Phase 2 progress/state; preserve Discogs API cache")
@@ -1657,7 +1701,7 @@ def main() -> int:
         return 2
     script_dir = Path(__file__).resolve().parent
     out_dir = (Path(args.out_dir).expanduser().resolve() if args.out_dir
-               else script_dir / "discogs_bot_verify_v8_1_output")
+               else script_dir / "discogs_bot_verify_v8_2_output")
     cache_root = Path(args.cache_dir).expanduser().resolve()
     progress_path = Path(args.progress).expanduser().resolve()
     state_path = progress_path.with_suffix(progress_path.suffix + ".state.json")
@@ -1668,7 +1712,7 @@ def main() -> int:
         return 2
     if args.limit:
         input_rows = input_rows[:args.limit]
-    signature = {"path": str(source), "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns, "pipeline_policy": "direct-barcode-max-100-full-v6-no-master-expansion-v1"}
+    signature = {"path": str(source), "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns, "pipeline_policy": "direct-barcode-max-100-full-v6-no-master-expansion-single-artist-guard-v8-2"}
     if args.reset:
         progress_path.unlink(missing_ok=True)
         state_path.unlink(missing_ok=True)
@@ -1695,14 +1739,14 @@ def main() -> int:
     last_dg_request = [0.0]
 
     print("=" * 72)
-    print("DISCOGS LINK BOT V8.1 — PHASE 2: DISCOGS API + V6 VERIFICATION")
+    print("DISCOGS LINK BOT V8.2 — PHASE 2: ARTIST GUARD")
     print("=" * 72)
     print(f"Phase 1 snapshot: {source}\nMBID groups selected: {len(input_rows):,}\nAlready completed: {len(done):,}\nRemaining: {len(remaining):,}")
     print(f"Discogs minimum interval: {args.discogs_delay:.2f}s | API cache: {cache_root}")
     print(f"Phase 2 output folder: {out_dir}")
     print("MusicBrainz Web Service: NOT USED — full MB release data comes from Phase 1 snapshot")
-    print(f"Discogs barcode limit: {MAX_BARCODE_SEARCH_RESULTS_V8_1} total results per MBID. Master-version expansion: DISABLED.")
-    print("All direct barcode hits under the limit receive full V6 release identity verification.")
+    print(f"Discogs barcode limit: {MAX_BARCODE_SEARCH_RESULTS_V8_2} total results per MBID. Master-version expansion: DISABLED.")
+    print("Artist gate: exactly one distinct Discogs primary Artist ID required before V6 verification.")
     print("Read-only. No MusicBrainz edits.\n")
 
     try:
@@ -1755,6 +1799,14 @@ def main() -> int:
                             )
 
                         candidate_results: list[dict[str, str]] = []
+                        artist_id_to_name: dict[str, str] = {}
+                        verified_candidates: list[tuple[dict[str, str], dict[str, Any]]] = []
+                        missing_release_ids: list[str] = []
+                        missing_identity_reasons: list[str] = []
+                        multiple_artists_detected = False
+
+                        # Inspect real Discogs primary-artist IDs for every direct
+                        # barcode hit. Run V6 only after the group proves one artist.
                         for index, candidate in enumerate(candidates, 1):
                             row = build_candidate_row(mbid, barcode, candidate, index, total_items, total_pages)
                             rid = str(candidate.get("id") or "").strip()
@@ -1764,23 +1816,42 @@ def main() -> int:
                                 )
                             except HTTPStatusError as exc:
                                 if exc.status == 404:
-                                    result = {
-                                        **row,
-                                        "status": "REJECT_DISCOGS_NOT_FOUND",
-                                        "reason": "DISCOGS_API_RETURNED_404",
-                                        "mb_title": str(mb.get("title") or ""),
-                                        "mb_artist": mb_artist_credit(mb),
-                                        "mb_barcode": norm_barcode(mb.get("barcode")),
-                                        "discogs_api_title": "",
-                                        "discogs_api_artist": "",
-                                        "discogs_api_barcodes": "",
-                                        "existing_discogs_links": ";".join(u for u, _ in mb_discogs_links(mb)),
-                                    }
+                                    missing_release_ids.append(rid)
                                 else:
                                     raise
                             else:
-                                result = evaluate(row, mb, dg, blacklist)
-                            candidate_results.append(result)
+                                try:
+                                    release_artist_map = discogs_primary_artist_ids(dg)
+                                except DiscogsArtistIdentityError as exc:
+                                    missing_identity_reasons.append(f"{rid}:{exc}")
+                                    release_artist_map = {}
+                                for artist_id, artist_name in release_artist_map.items():
+                                    artist_id_to_name.setdefault(artist_id, artist_name)
+
+                                if len(artist_id_to_name) > 1:
+                                    artist_ids = sorted(artist_id_to_name)
+                                    artist_names = [artist_id_to_name[x] for x in artist_ids]
+                                    group.update(
+                                        status="SKIPPED_MULTIPLE_ARTISTS",
+                                        reason="BARCODE_SEARCH_RETURNED_MULTIPLE_DISCOGS_PRIMARY_ARTIST_IDS",
+                                        artist_count=len(artist_ids),
+                                        discogs_artist_ids=";".join(artist_ids),
+                                        discogs_artists=";".join(artist_names),
+                                        candidate_count=candidates_before_filter,
+                                        candidate_count_checked=index,
+                                    )
+                                    multiple_artists_detected = True
+                                    print(
+                                        f"  SKIP MBID {mbid}: multiple Discogs primary artists found "
+                                        f"({'; '.join(artist_names)}; IDs: {', '.join(artist_ids)}). "
+                                        f"V6 verification not started.",
+                                        flush=True,
+                                    )
+                                    break
+
+                                if release_artist_map:
+                                    verified_candidates.append((row, dg))
+
                             if index == 1 or index % 25 == 0 or index == len(candidates):
                                 elapsed = time.monotonic() - started
                                 group_fraction = index / max(len(candidates), 1)
@@ -1788,23 +1859,61 @@ def main() -> int:
                                     processed + group_fraction, len(remaining), elapsed
                                 )
                                 print(
-                                    f"{live_progress} MBID {mbid}: full Discogs release checks "
+                                    f"{live_progress} MBID {mbid}: primary-artist identity checks "
                                     f"{index:,}/{len(candidates):,}",
                                     flush=True,
                                 )
-                        group.update(
-                            status="DONE_WITH_RESULTS",
-                            reason="DIRECT_BARCODE_SEARCH_AND_FULL_V6_VERIFICATION_COMPLETED",
-                            results=candidate_results,
-                            candidate_count_before_filter=candidates_before_filter,
-                            candidate_count=len(candidates),
-                        )
+
+                        if not multiple_artists_detected:
+                            if missing_release_ids or missing_identity_reasons:
+                                unverifiable_count = len(missing_release_ids) + len(missing_identity_reasons)
+                                group.update(
+                                    status="SKIPPED_ARTIST_UNVERIFIABLE",
+                                    reason=f"ARTIST_ID_UNVERIFIABLE_FOR_{unverifiable_count}_DISCOGS_RELEASES",
+                                    artist_count=len(artist_id_to_name),
+                                    discogs_artist_ids=";".join(sorted(artist_id_to_name)),
+                                    discogs_artists=";".join(artist_id_to_name[x] for x in sorted(artist_id_to_name)),
+                                    candidate_count=candidates_before_filter,
+                                    candidate_count_checked=len(candidates),
+                                    unverifiable_release_ids=";".join(missing_release_ids),
+                                    unverifiable_artist_details=";".join(missing_identity_reasons),
+                                )
+                                print(
+                                    f"  SKIP MBID {mbid}: artist identity could not be verified for "
+                                    f"{unverifiable_count} release(s) with missing/invalid primary-artist data.",
+                                    flush=True,
+                                )
+                            elif len(artist_id_to_name) != 1:
+                                raise RuntimeError(
+                                    "Discogs release details did not provide exactly one verifiable primary Artist ID"
+                                )
+                            else:
+                                artist_ids = sorted(artist_id_to_name)
+                                artist_names = [artist_id_to_name[x] for x in artist_ids]
+                                for row, dg in verified_candidates:
+                                    result = evaluate(row, mb, dg, blacklist)
+                                    result["barcode_search_artist_count"] = str(len(artist_ids))
+                                    result["barcode_search_artist_ids"] = ";".join(artist_ids)
+                                    result["barcode_search_artists"] = ";".join(artist_names)
+                                    candidate_results.append(result)
+
+                                group.update(
+                                    status="DONE_WITH_RESULTS",
+                                    reason="ONE_DISCOGS_PRIMARY_ARTIST_CONFIRMED_AND_FULL_V6_VERIFICATION_COMPLETED",
+                                    results=candidate_results,
+                                    candidate_count_before_filter=candidates_before_filter,
+                                    candidate_count=len(candidates),
+                                    artist_count=1,
+                                    discogs_artist_ids=";".join(artist_ids),
+                                    discogs_artists=";".join(artist_names),
+                                    candidate_count_checked=len(candidates),
+                                )
                     if total_items == 1 and total_pages < 1:
                         raise RuntimeError("Discogs pagination reported a single result but no pages")
                 except TooManyDiscogsResults as exc:
                     group.update(
                         status="SKIPPED_TOO_MANY_RESULTS",
-                        reason=f"BARCODE_SEARCH_RETURNED_{exc.total_items}_RESULTS_LIMIT_{MAX_BARCODE_SEARCH_RESULTS_V8_1}",
+                        reason=f"BARCODE_SEARCH_RETURNED_{exc.total_items}_RESULTS_LIMIT_{MAX_BARCODE_SEARCH_RESULTS_V8_2}",
                         search_total_results=exc.total_items,
                         search_pages=exc.total_pages,
                         search_release_rows=exc.first_page_rows,
@@ -1812,7 +1921,7 @@ def main() -> int:
                     )
                     print(
                         f"  SKIP MBID {mbid}: Discogs barcode search returned {exc.total_items:,} "
-                        f"results (limit {MAX_BARCODE_SEARCH_RESULTS_V8_1:,}); no release details requested.",
+                        f"results (limit {MAX_BARCODE_SEARCH_RESULTS_V8_2:,}); no release details requested.",
                         flush=True,
                     )
                 except HTTPStatusError as exc:
@@ -1852,7 +1961,7 @@ def main() -> int:
 
     report_path, summary_path, results_path = write_stage2_outputs(out_dir, progress, source, len(input_rows), len(blacklist))
     print("\n" + "=" * 72)
-    print("V8.1 PHASE 2 FINISHED" if not fatal else "V8.1 PHASE 2 STOPPED — PROGRESS PRESERVED")
+    print("V8.2 PHASE 2 FINISHED" if not fatal else "V8.2 PHASE 2 STOPPED — PROGRESS PRESERVED")
     print("=" * 72)
     print(f"MBID groups completed or skipped: {sum(1 for g in progress.values() if str(g.get('status','')).startswith(('DONE_', 'SKIPPED_'))):,}")
     print(f"Candidate report: {report_path}\nQualified MBID list: {results_path}\nSummary: {summary_path}")
