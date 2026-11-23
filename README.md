@@ -113,14 +113,7 @@ The progress JSONL is updated after each completed MBID group. The TSV, summary 
 
 After Ctrl+C, rerun the same Phase 2 command. Completed and skipped MBIDs are not repeated, and cached API responses are reused.
 
-To intentionally start a phase again from zero, use its `--reset` option:
-
-```powershell
-py discogs_barcode_builder.py --reset
-py discogs_bot_verify.py --reset
-```
-
-Reset removes that phase's progress and state files but preserves its API cache. Delete the relevant cache folder manually only when you explicitly want to discard cached responses too.
+To intentionally start a phase again from zero, add the optional `--reset` switch to that phase's command. Reset removes that phase's progress and state files but preserves its API cache. Delete the relevant cache folder manually only when you explicitly want to discard cached responses too.
 
 ## Matching and safety notes
 
