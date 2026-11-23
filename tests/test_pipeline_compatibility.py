@@ -1,4 +1,4 @@
-"""Offline smoke tests for the V8 Phase 1 JSONL -> Phase 2 handoff."""
+"""Offline smoke tests for the V8 Phase 1 JSONL -> V8.1 Phase 2 handoff."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -16,7 +16,7 @@ def load_module(name, filename):
 
 
 BUILDER = load_module("discogs_barcode_builder_v8", "discogs_barcode_builder.py")
-VERIFY = load_module("discogs_bot_verify_v8", "discogs_bot_verify.py")
+VERIFY = load_module("discogs_bot_verify_v8_1", "discogs_bot_verify.py")
 
 
 class PipelineHandoffTests(unittest.TestCase):
@@ -49,6 +49,7 @@ class PipelineHandoffTests(unittest.TestCase):
     def test_results_txt_contains_only_unambiguous_mbid_discogs_pair(self):
         first = "11111111-1111-4111-8111-111111111111"
         ambiguous = "22222222-2222-4222-8222-222222222222"
+        skipped = "33333333-3333-4333-8333-333333333333"
         progress = {
             first: {
                 "mbid": first, "report_position": 1, "status": "DONE_WITH_RESULTS",
@@ -61,16 +62,27 @@ class PipelineHandoffTests(unittest.TestCase):
                     {"status": "AUTO_CANDIDATE", "discogs_url": "https://www.discogs.com/release/222222"},
                 ],
             },
+            skipped: {
+                "mbid": skipped, "report_position": 3, "barcode": "4893391073526",
+                "status": "SKIPPED_TOO_MANY_RESULTS", "search_total_results": 2117,
+                "search_pages": 22, "candidate_count": 0,
+                "reason": "BARCODE_SEARCH_RETURNED_2117_RESULTS_LIMIT_100", "results": [],
+            },
         }
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = root / "stage1.jsonl"
             source.write_text("{}\n", encoding="utf-8")
-            report, summary, results = VERIFY.write_stage2_outputs(root / "phase2", progress, source, 2, 0)
+            report, summary, results = VERIFY.write_stage2_outputs(root / "phase2", progress, source, 3, 0)
             lines = results.read_text(encoding="utf-8").splitlines()
+            report_text = report.read_text(encoding="utf-8-sig")
+            summary_text = summary.read_text(encoding="utf-8-sig")
             self.assertTrue(report.is_file())
             self.assertTrue(summary.is_file())
             self.assertEqual(lines, [f"{first}\thttps://www.discogs.com/release/123456"])
+            self.assertIn(skipped, report_text)
+            self.assertIn("SKIPPED_TOO_MANY_RESULTS", report_text)
+            self.assertIn("SKIPPED_TOO_MANY_RESULTS: 1", summary_text)
 
 
 if __name__ == "__main__":
