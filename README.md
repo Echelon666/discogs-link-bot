@@ -58,7 +58,7 @@ For each MBID, Phase 2 performs one Discogs barcode search and checks the API's 
 | Discogs total results | Action |
 |---:|---|
 | 0 | Mark as `DONE_NO_DISCOGS_RESULTS` |
-| 1–100 | Verify every direct barcode-search release |
+| 1–100 | Run the Artist Guard; if it passes, verify every direct barcode-search release |
 | 101 or more | Skip the MBID as `SKIPPED_TOO_MANY_RESULTS` |
 
 The limit is based on `pagination.items` from Discogs, not the number of rows visible on the first page. Exactly 100 results are allowed.
@@ -67,7 +67,7 @@ The limit is based on `pagination.items` from Discogs, not the number of rows vi
 
 **Master-version expansion is disabled.** Phase 2 does not fetch linked master versions. This prevents a small barcode search from ballooning into thousands of unrelated pressings. Only MBIDs that pass the Artist Guard proceed to the full V6 verification: artist, title, barcode, medium type and quantity, year, country, label, catalog number, existing MusicBrainz Discogs links and the official MusicBrainz Discogs-link blacklist.
 
-The default minimum interval between Discogs API request starts is 1.1 seconds. A skipped MBID requires only its initial barcode-search request; no release-detail requests are sent for it.
+The default minimum interval between Discogs API request starts is 1.1 seconds. MBIDs skipped because the total exceeds 100 require only the initial barcode-search request. For results between 1 and 100, release details are requested for the Artist Guard; when it finds multiple or unverifiable primary-artist identities, it stops that MBID before V6 verification.
 
 Pilot:
 
